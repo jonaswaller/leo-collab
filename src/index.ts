@@ -1,9 +1,11 @@
-import { CFG } from './config.js';
-import { makeClobClient } from './clients.js';
-import { resolveHandleToProxyWallet } from './gamma.js';
-import { getUserTrades } from './data.js';
-import { mirrorTrade } from './trader.js';
-import { printTradeCard, printMirrorLine, timeAgo } from './logger.js';
+import { CFG } from "./config.js";
+import { makeClobClient } from "./clients.js";
+import { resolveHandleToProxyWallet } from "./gamma.js";
+import { getUserTrades } from "./data.js";
+import { mirrorTrade } from "./trader.js";
+import { printTradeCard, printMirrorLine, timeAgo } from "./logger.js";
+import { TokenBucket, nextDelay } from "./poll.js";
+import { printRateStatus } from "./rate.js";
 
 (async () => {
   const { client } = await makeClobClient();
@@ -15,15 +17,22 @@ import { printTradeCard, printMirrorLine, timeAgo } from './logger.js';
   const seen = new Set<string>();
   let watermark = Math.floor(Date.now() / 1000) - 2; // start ~now, allow tiny skew
 
-  const loop = async () => {
+  const bucket = new TokenBucket(CFG.maxTradesRPS, 1.0);
+
+  // Print rate status every 5 seconds
+  setInterval(printRateStatus, 5000);
+
+  async function runLoop() {
     try {
-      const rows = await getUserTrades(targetWallet, 100); // newest first
-      // process oldest→newest within the batch
+      // obey rate limiter
+      if (!bucket.take()) {
+        setTimeout(runLoop, nextDelay());
+        return;
+      }
+      const rows = await getUserTrades(targetWallet, CFG.tradesLimit);
       for (const t of rows.slice().reverse()) {
-        // allow multiple trades at same second
         if (t.timestamp < watermark) continue;
         watermark = Math.max(watermark, t.timestamp);
-
         if (seen.has(t.transactionHash)) continue;
         seen.add(t.transactionHash);
 
@@ -33,26 +42,51 @@ import { printTradeCard, printMirrorLine, timeAgo } from './logger.js';
         printTradeCard({
           side: t.side,
           market: marketName,
-          outcome: t.outcome ?? (typeof t.outcomeIndex === 'number' ? `Outcome ${t.outcomeIndex}` : 'Outcome'),
+          outcome:
+            t.outcome ??
+            (typeof t.outcomeIndex === "number"
+              ? `Outcome ${t.outcomeIndex}`
+              : "Outcome"),
           price: t.price,
           shares,
           usd,
           when: timeAgo(t.timestamp),
-          slug: t.slug,
+          ...(t.slug && { slug: t.slug }),
         });
 
-        const placed = await mirrorTrade(client, t);
-        if (placed?.ok) {
-          printMirrorLine(true, t.side, t.asset, placed.price, placed.size);
+        const result = await mirrorTrade(client, t);
+        if (result.ok) {
+          printMirrorLine(
+            true,
+            t.side,
+            t.asset,
+            result.price,
+            result.filled ?? result.size,
+          );
         } else {
-          printMirrorLine(false, t.side, t.asset, placed?.intended?.price, placed?.intended?.size, placed?.reason);
+          printMirrorLine(
+            false,
+            t.side,
+            t.asset,
+            result.intended?.price,
+            result.intended?.size,
+            result.reason,
+          );
         }
       }
+      setTimeout(runLoop, nextDelay());
     } catch (e: any) {
-      console.error('poll error', e?.response?.data ?? e);
+      // simple backoff on known throttling/gateway issues
+      const status = e?.response?.status || 0;
+      const retry = status === 429 || status >= 500 ? 280 : nextDelay();
+      console.warn("poll error", e?.response?.data || e.message || e);
+      setTimeout(runLoop, retry);
     }
-  };
+  }
 
-  console.log(`Monitoring ${target} for new trades (watermark: ${new Date(watermark * 1000).toISOString()})...`);
-  setInterval(loop, CFG.pollMs);
+  // kickoff
+  console.log(
+    `Monitoring ${target} for new trades (watermark: ${new Date(watermark * 1000).toISOString()})...`,
+  );
+  runLoop();
 })();
