@@ -9,23 +9,39 @@ export async function makeClobClient() {
   );
   const wallet = new ethers.Wallet(CFG.privateKey, provider);
 
-  const base = new ClobClient(CFG.clobHost, CFG.chainId, wallet);
-
-  // try derive first (if you already have a key), then create; swallow errors but log them
+  // Derive or create API key once with a bare client
   let creds: any | undefined;
   try {
-    creds = await base.deriveApiKey?.(); // newer client versions expose this
+    creds = await new ClobClient(
+      CFG.clobHost,
+      CFG.chainId,
+      wallet,
+    ).createOrDeriveApiKey?.();
   } catch (e: any) {
     console.warn(
-      "[CLOB] deriveApiKey failed; will try create",
+      "[CLOB] createOrDeriveApiKey failed (will try derive/create separately)",
       e?.response?.data || e,
     );
   }
+
+  // Fall back to explicit derive/create paths if needed
   if (!creds) {
     try {
-      creds = await base.createApiKey?.();
+      creds = await new ClobClient(
+        CFG.clobHost,
+        CFG.chainId,
+        wallet,
+      ).deriveApiKey?.();
+    } catch {}
+  }
+  if (!creds) {
+    try {
+      creds = await new ClobClient(
+        CFG.clobHost,
+        CFG.chainId,
+        wallet,
+      ).createApiKey?.();
     } catch (e: any) {
-      // Known: some envs see 400 "Could not create api key" but can still proceed.
       console.warn(
         "[CLOB] createApiKey failed; continuing without cached creds",
         e?.response?.data || e,
@@ -33,6 +49,18 @@ export async function makeClobClient() {
     }
   }
 
-  const client = new ClobClient(CFG.clobHost, CFG.chainId, wallet, creds);
+  // IMPORTANT: pass signatureType + funder when using a proxy
+  const signatureType = CFG.useProxy ? CFG.signatureType : 0;
+  const funder = CFG.useProxy ? CFG.proxyWallet : undefined;
+
+  const client = new ClobClient(
+    CFG.clobHost,
+    CFG.chainId,
+    wallet,
+    creds,
+    signatureType,
+    funder,
+  );
+
   return { client, wallet };
 }

@@ -15,6 +15,9 @@ export const CFG = {
   allowBuys: (process.env.ALLOW_BUYS || "true") === "true",
   allowSells: (process.env.ALLOW_SELLS || "true") === "true",
   strictPrice: true, // post at EXACT price, never chase
-  cancelMs: 1000, // 1s window to fill, then cancel immediately
+  cancelMs: 5000, // 1s window to fill, then cancel immediately
   allowPartial: true, // keep partial fills, cancel remainder
+  useProxy: (process.env.USE_PROXY || "false") === "true",
+  proxyWallet: process.env.PROXY_WALLET || "", // funder
+  signatureType: Number(process.env.SIGNATURE_TYPE || 0), // 2 for browser-proxy
 };

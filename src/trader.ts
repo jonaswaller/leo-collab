@@ -109,6 +109,13 @@ export async function mirrorTrade(
     };
   } catch (e: any) {
     const err = e?.response?.data?.error || e?.message || "unknown";
+    // Log full response data once for better error visibility (allowance errors, etc.)
+    if (e?.response?.data) {
+      console.warn(
+        "[TRADER] Full error response:",
+        JSON.stringify(e.response.data),
+      );
+    }
     // Typical server messages include NOT_ENOUGH_BALANCE/ALLOWANCE, INVALID_ORDER_MIN_TICK_SIZE, etc.
     // https://docs.polymarket.com/developers/CLOB/orders/create-order
     return { ok: false, reason: err, intended: { price, size } };
