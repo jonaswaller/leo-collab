@@ -1,8 +1,22 @@
 import { CFG } from "./config.js";
 import { getConstraints, roundToTick } from "./book.js";
-import type { TradeRow } from "./data.js";
 import { OrderType, Side } from "@polymarket/clob-client";
 import { recordReq } from "./rate.js";
+
+export type TradeInput = {
+  proxyWallet: string;
+  side: "BUY" | "SELL";
+  asset: string; // token_id
+  conditionId: string;
+  price: number;
+  size: number;
+  timestamp: number;
+  transactionHash: string;
+  outcome?: string;
+  outcomeIndex?: number;
+  slug?: string;
+  title?: string;
+};
 
 type MirrorResult = {
   ok: boolean;
@@ -16,7 +30,7 @@ type MirrorResult = {
 
 export async function mirrorTrade(
   clob: any,
-  t: TradeRow,
+  t: TradeInput,
 ): Promise<MirrorResult> {
   if (t.side === "BUY" && !CFG.allowBuys)
     return { ok: false, reason: "buys disabled" };
@@ -28,51 +42,96 @@ export async function mirrorTrade(
 
   // 2) Compute exact price & capped size (strict price).
   const targetPx = roundToTick(t.price, tickSize);
-  const notional = CFG.maxNotional;
+
+  // ============================================================================
+  // 🧪 TESTING MODE: FIXED $1 SPEND PER TRADE
+  // ============================================================================
+  // This is TEMPORARY for testing latency and detection.
+  //
+  // Current behavior:
+  // - Spends exactly $1 per trade (Polymarket minimum)
+  // - Calculates shares: $1 / price
+  // - Rounds down to minimum order size increments
+  // - Skips if $1 doesn't meet minimum order size
+  //
+  // For PRODUCTION, replace with:
+  //   const notional = CFG.maxNotional;
+  //
+  // This will use the MAX_NOTIONAL_USDC from .env (default $5)
+  // ============================================================================
+  const notional = 1.0; // 🧪 TESTING: $1 exactly (change to CFG.maxNotional for production)
   const rawQty = notional / Math.max(targetPx, 0.01);
 
-  // round size DOWN to min-order increments
-  const size = Math.floor(rawQty / minOrder) * minOrder;
-  if (size < minOrder)
-    return { ok: false, reason: "min-order", intended: { price: targetPx, size } };
+  // Round size DOWN to min-order increments
+  let size = Math.floor(rawQty / minOrder) * minOrder;
+  let actualNotional = notional;
+
+  if (size < minOrder) {
+    // If $1 doesn't buy enough shares, use minimum order size instead
+    size = minOrder;
+    actualNotional = minOrder * targetPx;
+    console.log(
+      `[TEST MODE] $1 too small, buying minimum ${minOrder} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
+    );
+  } else {
+    console.log(
+      `[TEST MODE] Buying ${size} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
+    );
+  }
 
   const side = t.side === "BUY" ? Side.BUY : Side.SELL;
 
   try {
     // 3) Place a FAK (Fill-And-Kill) order for immediate execution
-    //    This is IOC semantics: fill whatever's immediately available, cancel the rest
+    //    Use createAndPostMarketOrder for FAK orders (market orders with immediate execution)
     recordReq("clob:post_order");
-    const resp = await clob.createAndPostOrder(
+
+    // Calculate the dollar amount to spend (for BUY) or shares to sell (for SELL)
+    const amount = side === Side.BUY ? actualNotional : size;
+
+    const resp = await clob.createAndPostMarketOrder(
       {
         tokenID: t.asset,
-        price: Number(targetPx.toFixed(6)),
-        size: Number(size.toFixed(6)),
+        price: Number(targetPx.toFixed(6)), // Target price
+        amount: Number(amount.toFixed(6)), // $ for BUY, shares for SELL
         side,
+        orderType: OrderType.FAK, // Fill-And-Kill
       },
       { tickSize: tickSize.toString(), negRisk },
-      OrderType.FAK, // <<< immediate-or-cancel semantics
+      OrderType.FAK,
     );
 
-    const orderId: string | undefined = resp?.orderID ?? resp?.id;
-    if (!orderId) {
-      // If server rejected immediately, bubble reason if present.
-      const reason = resp?.errorMsg || "order rejected";
-      return { ok: false, reason, intended: { price: targetPx, size } };
+    // Check response
+    if (!resp?.success && resp?.errorMsg) {
+      return {
+        ok: false,
+        reason: resp.errorMsg,
+        intended: { price: targetPx, size },
+      };
     }
 
-    // With FAK, the remainder is already canceled by the exchange
-    // sizeMatched tells us what filled immediately
-    // If not present in response, fetch order status once
-    let filled = Number(resp?.sizeMatched ?? 0);
-    if (!resp?.sizeMatched && orderId) {
-      try {
-        recordReq("clob:get_orders");
-        const ord = await clob.getOrder(orderId);
-        filled = Number(ord?.order?.size_matched ?? ord?.size_matched ?? 0);
-      } catch {
-        // If getOrder fails, assume no fill
-        filled = 0;
-      }
+    const orderId: string | undefined = resp?.orderID;
+    if (!orderId) {
+      return {
+        ok: false,
+        reason: "no order ID",
+        intended: { price: targetPx, size },
+      };
+    }
+
+    // For FAK orders, takingAmount tells us what filled
+    // takingAmount is in shares for BUY, in USDC for SELL
+    const takingAmount = Number(resp?.takingAmount ?? 0);
+    const makingAmount = Number(resp?.makingAmount ?? 0);
+
+    // Calculate filled shares
+    let filled = 0;
+    if (side === Side.BUY) {
+      // For BUY: takingAmount is shares we got
+      filled = takingAmount;
+    } else {
+      // For SELL: makingAmount is USDC we got, divide by price to get shares sold
+      filled = targetPx > 0 ? makingAmount / targetPx : 0;
     }
 
     if (filled > 0 && CFG.allowPartial) {

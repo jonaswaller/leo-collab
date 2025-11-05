@@ -24,8 +24,6 @@ export class TokenBucket {
   }
 }
 
-export function nextDelay(base = CFG.pollMs, jitter = CFG.pollJitterMs) {
-  if (jitter <= 0) return base;
-  const j = Math.floor((Math.random() * 2 - 1) * jitter);
-  return Math.max(50, base + j);
+export function nextDelay(base = CFG.pollMs) {
+  return base;
 }

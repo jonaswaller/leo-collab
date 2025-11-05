@@ -1,6 +1,5 @@
 # Codebase
 
-
 ## src/book.ts
 
 ```typescript
@@ -112,7 +111,7 @@ export async function makeClobClient() {
   // 🚨 Hard-fail: you cannot place/cancel orders without API creds
   if (!creds) {
     throw new Error(
-      "Could not create/derive API credentials. Check PRIVATE_KEY (0x-hex), system clock, and PROXY_WALLET for proxy mode."
+      "Could not create/derive API credentials. Check PRIVATE_KEY (0x-hex), system clock, and PROXY_WALLET for proxy mode.",
     );
   }
 
@@ -143,21 +142,21 @@ export const CFG = {
   clobHost: process.env.CLOB_HOST || "https://clob.polymarket.com",
   dataApi: process.env.DATA_API || "https://data-api.polymarket.com",
   gammaApi: process.env.GAMMA_API || "https://gamma-api.polymarket.com",
+  rtDataHost: process.env.RT_DATA_HOST || "wss://ws-live-data.polymarket.com",
   chainId: Number(process.env.CHAIN_ID || 137),
   targetHandle: process.env.TARGET_HANDLE || "RN1",
   maxNotional: Number(process.env.MAX_NOTIONAL_USDC || 5),
-  pollMs: Number(process.env.POLL_INTERVAL_MS || 160), // lower base interval
-  pollJitterMs: Number(process.env.POLL_JITTER_MS || 12), // ± jitter
-  tradesLimit: Number(process.env.TRADES_LIMIT || 3), // tiny payload
+  // HTTP polling as backup only - much slower interval
+  pollMs: Number(process.env.POLL_INTERVAL_MS || 5000), // 5s backup poll
+  tradesLimit: Number(process.env.TRADES_LIMIT || 20), // catch rapid-fire trades
   maxTradesRPS: Number(process.env.TRADES_RPS || 6.5), // <= 75 / 10s
   allowBuys: (process.env.ALLOW_BUYS || "true") === "true",
-  allowSells: (process.env.ALLOW_SELLS || "true") === "true",
+  allowSells: (process.env.ALLOW_SELLS || "false") === "true", // you said they don't sell
   strictPrice: true, // post at EXACT price, never chase
   allowPartial: true, // keep partial fills with FAK
   useProxy: (process.env.USE_PROXY || "false") === "true",
   proxyWallet: process.env.PROXY_WALLET || "", // funder
   signatureType: Number(process.env.SIGNATURE_TYPE || 0), // 2 for browser-proxy
-  useWebSocket: (process.env.USE_WEBSOCKET || "false") === "true", // enable WS for real-time
 };
 ```
 
@@ -345,105 +344,165 @@ import { CFG } from "./config.js";
 import { makeClobClient } from "./clients.js";
 import { resolveHandleToProxyWallet } from "./gamma.js";
 import { getUserTrades } from "./data.js";
-import { mirrorTrade } from "./trader.js";
+import { mirrorTrade, TradeInput } from "./trader.js";
 import { printTradeCard, printMirrorLine, timeAgo } from "./logger.js";
-import { TokenBucket, nextDelay } from "./poll.js";
 import { printRateStatus } from "./rate.js";
-import { MarketWebSocket } from "./websocket.js";
-import { updateTickSize } from "./book.js";
+import { PolymarketRealTimeClient, ActivityTrade } from "./realtime.js";
+
+// ConnectionStatus enum values
+const ConnectionStatus = {
+  CONNECTING: "CONNECTING",
+  CONNECTED: "CONNECTED",
+  DISCONNECTED: "DISCONNECTED",
+} as const;
+
+type ConnectionStatus =
+  (typeof ConnectionStatus)[keyof typeof ConnectionStatus];
 
 (async () => {
   const { client } = await makeClobClient();
 
   const target = CFG.targetHandle;
   const targetWallet = await resolveHandleToProxyWallet(target);
-  console.log(`Following ${target} at ${targetWallet}`);
+  console.log(`\n🎯 Following ${target} at ${targetWallet}`);
+  console.log(`💰 Max notional per trade: $${CFG.maxNotional}`);
+  console.log(
+    `📊 Buys: ${CFG.allowBuys ? "✅" : "❌"} | Sells: ${CFG.allowSells ? "✅" : "❌"}\n`,
+  );
 
   const seen = new Set<string>();
   let watermark = Math.floor(Date.now() / 1000) - 2; // start ~now, allow tiny skew
 
-  const bucket = new TokenBucket(CFG.maxTradesRPS, 1.0);
+  // Stats tracking
+  let wsTradeCount = 0;
+  let httpTradeCount = 0;
+  let mirrorSuccessCount = 0;
+  let mirrorFailCount = 0;
 
-  // Track tokens we've seen to subscribe to WebSocket
-  const seenTokens = new Set<string>();
+  // Initialize real-time WebSocket client (PRIMARY detection method)
+  const rtClient = new PolymarketRealTimeClient(targetWallet);
 
-  // Initialize WebSocket for real-time events
-  const ws = new MarketWebSocket();
-  if (CFG.useWebSocket) {
-    // Seed tokens from the first fetch so WS subscribes immediately
-    const seedRows = await getUserTrades(targetWallet, Math.max(5, CFG.tradesLimit));
-    for (const r of seedRows) seenTokens.add(r.asset);
-    for (const tok of seenTokens) ws.subscribeToToken(tok);
+  rtClient.onStatus((status: ConnectionStatus) => {
+    if (status === ConnectionStatus.CONNECTED) {
+      console.log(
+        "✅ Real-time WebSocket connected - ultra-low latency mode active",
+      );
+    } else if (status === ConnectionStatus.DISCONNECTED) {
+      console.warn(
+        "⚠️  Real-time WebSocket disconnected - falling back to HTTP polling",
+      );
+    }
+  });
 
-    ws.connect(
-      async (trade) => {
-        // WebSocket last_trade_price event - mirror immediately
-        console.log(`[WS] Trade: ${trade.side} ${trade.size} @ ${trade.price} on ${trade.asset_id}`);
-        
-        // Convert WS event to TradeRow format and mirror
-        const wsTradeRow = {
-          proxyWallet: targetWallet,
-          side: trade.side,
-          asset: trade.asset_id,
-          conditionId: trade.market,
-          price: Number(trade.price),
-          size: Number(trade.size),
-          timestamp: trade.timestamp,
-          transactionHash: `ws-${trade.asset_id}-${trade.timestamp}`,
-        };
-        
-        // Check if we've already seen this (avoid duplicate from HTTP poll)
-        const wsKey = `${trade.asset_id}-${trade.timestamp}-${trade.price}`;
-        if (!seen.has(wsKey)) {
-          seen.add(wsKey);
-          const result = await mirrorTrade(client, wsTradeRow);
-          if (result.ok) {
-            printMirrorLine(true, trade.side, trade.asset_id, result.price, result.filled ?? result.size);
-          } else {
-            printMirrorLine(false, trade.side, trade.asset_id, result.intended?.price, result.intended?.size, result.reason);
-          }
-        }
-      },
-      (tickChange) => {
-        // Update cache when tick size changes
-        console.log(`[WS] Tick size changed for ${tickChange.asset_id}: ${tickChange.tick_size}`);
-        updateTickSize(tickChange.asset_id, Number(tickChange.tick_size));
-      }
+  rtClient.onTrade(async (trade: ActivityTrade) => {
+    wsTradeCount++;
+
+    // Deduplication key
+    const tradeKey = `${trade.transactionHash}`;
+    if (seen.has(tradeKey)) {
+      return; // Already processed
+    }
+    seen.add(tradeKey);
+
+    // Update watermark
+    watermark = Math.max(watermark, trade.timestamp);
+
+    // Print trade card
+    const marketName = trade.title || trade.slug || trade.conditionId;
+    const shares = trade.size;
+    const usd = shares * trade.price;
+    printTradeCard({
+      side: trade.side,
+      market: marketName,
+      outcome:
+        trade.outcome ??
+        (typeof trade.outcomeIndex === "number"
+          ? `Outcome ${trade.outcomeIndex}`
+          : "Outcome"),
+      price: trade.price,
+      shares,
+      usd,
+      when: timeAgo(trade.timestamp),
+      ...(trade.slug && { slug: trade.slug }),
+    });
+
+    // Convert to TradeInput and mirror
+    const tradeInput: TradeInput = {
+      proxyWallet: trade.proxyWallet,
+      side: trade.side,
+      asset: trade.asset,
+      conditionId: trade.conditionId,
+      price: trade.price,
+      size: trade.size,
+      timestamp: trade.timestamp,
+      transactionHash: trade.transactionHash,
+      ...(trade.outcome && { outcome: trade.outcome }),
+      ...(typeof trade.outcomeIndex === "number" && {
+        outcomeIndex: trade.outcomeIndex,
+      }),
+      ...(trade.slug && { slug: trade.slug }),
+      ...(trade.title && { title: trade.title }),
+    };
+
+    const result = await mirrorTrade(client, tradeInput);
+    if (result.ok) {
+      mirrorSuccessCount++;
+      printMirrorLine(
+        true,
+        trade.side,
+        trade.asset,
+        result.price,
+        result.filled ?? result.size,
+      );
+    } else {
+      mirrorFailCount++;
+      printMirrorLine(
+        false,
+        trade.side,
+        trade.asset,
+        result.intended?.price,
+        result.intended?.size,
+        result.reason,
+      );
+    }
+  });
+
+  // Connect to real-time stream
+  rtClient.connect();
+
+  // Print rate status and stats every 10 seconds
+  setInterval(() => {
+    printRateStatus();
+    console.log(
+      `📈 Stats: WS=${wsTradeCount} HTTP=${httpTradeCount} Success=${mirrorSuccessCount} Fail=${mirrorFailCount}`,
     );
-  }
+  }, 10000);
 
-  // Print rate status every 5 seconds
-  setInterval(printRateStatus, 5000);
-
-  async function runLoop() {
+  // HTTP polling as BACKUP ONLY (every 5 seconds)
+  // This catches anything the WebSocket might miss (rare)
+  async function backupPoll() {
     try {
-      // obey rate limiter
-      if (!bucket.take()) {
-        setTimeout(runLoop, nextDelay());
-        return;
-      }
       const rows = await getUserTrades(targetWallet, CFG.tradesLimit);
-      
-      // Process trades in parallel for lower latency
+
       const newTrades = rows
         .slice()
         .reverse()
         .filter((t) => {
           if (t.timestamp < watermark) return false;
-          watermark = Math.max(watermark, t.timestamp);
           if (seen.has(t.transactionHash)) return false;
           seen.add(t.transactionHash);
-          
-          // Subscribe to token WebSocket if enabled (use tokenId, not conditionId)
-          if (CFG.useWebSocket && !seenTokens.has(t.asset)) {
-            seenTokens.add(t.asset);
-            ws.subscribeToToken(t.asset);
-          }
-          
+          watermark = Math.max(watermark, t.timestamp);
           return true;
         });
 
-      // Process all new trades in parallel
+      if (newTrades.length > 0) {
+        httpTradeCount += newTrades.length;
+        console.log(
+          `[HTTP BACKUP] Caught ${newTrades.length} trades missed by WebSocket`,
+        );
+      }
+
+      // Process backup trades
       await Promise.allSettled(
         newTrades.map(async (t) => {
           const marketName = t.title || t.slug || t.conditionId;
@@ -466,6 +525,7 @@ import { updateTickSize } from "./book.js";
 
           const result = await mirrorTrade(client, t);
           if (result.ok) {
+            mirrorSuccessCount++;
             printMirrorLine(
               true,
               t.side,
@@ -474,6 +534,7 @@ import { updateTickSize } from "./book.js";
               result.filled ?? result.size,
             );
           } else {
+            mirrorFailCount++;
             printMirrorLine(
               false,
               t.side,
@@ -483,25 +544,27 @@ import { updateTickSize } from "./book.js";
               result.reason,
             );
           }
-        })
+        }),
       );
 
-
-      setTimeout(runLoop, nextDelay());
+      setTimeout(backupPoll, CFG.pollMs);
     } catch (e: any) {
-      // simple backoff on known throttling/gateway issues
       const status = e?.response?.status || 0;
-      const retry = status === 429 || status >= 500 ? 280 : nextDelay();
-      console.warn("poll error", e?.response?.data || e.message || e);
-      setTimeout(runLoop, retry);
+      const retry = status === 429 || status >= 500 ? 10000 : CFG.pollMs;
+      console.warn("[HTTP BACKUP] Error:", e?.response?.data || e.message || e);
+      setTimeout(backupPoll, retry);
     }
   }
 
-  // kickoff
+  // Start backup polling
   console.log(
-    `Monitoring ${target} for new trades (watermark: ${new Date(watermark * 1000).toISOString()})...`,
+    `🔄 Starting backup HTTP polling (every ${CFG.pollMs / 1000}s)...`,
   );
-  runLoop();
+  setTimeout(backupPoll, CFG.pollMs);
+
+  console.log(`\n⚡ Ultra-low latency copy trading active!`);
+  console.log(`📡 Primary: Real-time WebSocket (~10-50ms latency)`);
+  console.log(`🔄 Backup: HTTP polling every ${CFG.pollMs / 1000}s\n`);
 })();
 ```
 
@@ -606,10 +669,8 @@ export class TokenBucket {
   }
 }
 
-export function nextDelay(base = CFG.pollMs, jitter = CFG.pollJitterMs) {
-  if (jitter <= 0) return base;
-  const j = Math.floor((Math.random() * 2 - 1) * jitter);
-  return Math.max(50, base + j);
+export function nextDelay(base = CFG.pollMs) {
+  return base;
 }
 ```
 
@@ -701,14 +762,154 @@ export function printRateStatus() {
 }
 ```
 
+## src/realtime.ts
+
+```typescript
+import { RealTimeDataClient } from "@polymarket/real-time-data-client";
+import { CFG } from "./config.js";
+
+// Type definitions from real-time-data-client
+type Message = {
+  topic: string;
+  type: string;
+  timestamp: number;
+  payload: any;
+  connection_id: string;
+};
+
+enum ConnectionStatus {
+  CONNECTING = "CONNECTING",
+  CONNECTED = "CONNECTED",
+  DISCONNECTED = "DISCONNECTED",
+}
+
+export type ActivityTrade = {
+  asset: string; // tokenId
+  bio?: string;
+  conditionId: string;
+  eventSlug?: string;
+  icon?: string;
+  name?: string;
+  outcome?: string;
+  outcomeIndex?: number;
+  price: number;
+  profileImage?: string;
+  proxyWallet: string;
+  pseudonym?: string;
+  side: "BUY" | "SELL";
+  size: number;
+  slug?: string;
+  timestamp: number;
+  title?: string;
+  transactionHash: string;
+};
+
+type TradeHandler = (trade: ActivityTrade) => void | Promise<void>;
+type StatusHandler = (status: ConnectionStatus) => void;
+
+export class PolymarketRealTimeClient {
+  private client: RealTimeDataClient;
+  private targetWallet: string;
+  private onTradeHandler?: TradeHandler;
+  private onStatusHandler?: StatusHandler;
+
+  constructor(targetWallet: string) {
+    this.targetWallet = targetWallet.toLowerCase();
+
+    this.client = new RealTimeDataClient({
+      host: CFG.rtDataHost,
+      onConnect: this.handleConnect.bind(this),
+      onMessage: this.handleMessage.bind(this),
+      onStatusChange: this.handleStatusChange.bind(this),
+      autoReconnect: true,
+      pingInterval: 5000,
+    });
+  }
+
+  private handleConnect(client: RealTimeDataClient) {
+    console.log("[RT] Connected to Polymarket real-time data stream");
+
+    // Subscribe to ALL activity trades (no filter = all trades)
+    // We'll filter by proxyWallet in the message handler
+    client.subscribe({
+      subscriptions: [
+        {
+          topic: "activity",
+          type: "trades",
+          filters: "", // Empty = all trades across all markets
+        },
+      ],
+    });
+
+    console.log("[RT] Subscribed to activity/trades (all markets)");
+  }
+
+  private handleMessage(client: RealTimeDataClient, message: Message) {
+    // Only process activity/trades messages
+    if (message.topic !== "activity" || message.type !== "trades") {
+      return;
+    }
+
+    const trade = message.payload as ActivityTrade;
+
+    // Filter by target wallet
+    if (trade.proxyWallet.toLowerCase() !== this.targetWallet) {
+      return;
+    }
+
+    // Call the registered handler
+    if (this.onTradeHandler) {
+      this.onTradeHandler(trade);
+    }
+  }
+
+  private handleStatusChange(status: ConnectionStatus) {
+    console.log(`[RT] Status: ${status}`);
+    if (this.onStatusHandler) {
+      this.onStatusHandler(status);
+    }
+  }
+
+  public connect() {
+    this.client.connect();
+  }
+
+  public disconnect() {
+    this.client.disconnect();
+  }
+
+  public onTrade(handler: TradeHandler) {
+    this.onTradeHandler = handler;
+  }
+
+  public onStatus(handler: StatusHandler) {
+    this.onStatusHandler = handler;
+  }
+}
+```
+
 ## src/trader.ts
 
 ```typescript
 import { CFG } from "./config.js";
 import { getConstraints, roundToTick } from "./book.js";
-import type { TradeRow } from "./data.js";
 import { OrderType, Side } from "@polymarket/clob-client";
 import { recordReq } from "./rate.js";
+
+export type TradeInput = {
+  proxyWallet: string;
+  side: "BUY" | "SELL";
+  asset: string; // token_id
+  conditionId: string;
+  price: number;
+  size: number;
+  timestamp: number;
+  transactionHash: string;
+  outcome?: string;
+  outcomeIndex?: number;
+  slug?: string;
+  title?: string;
+};
 
 type MirrorResult = {
   ok: boolean;
@@ -722,7 +923,7 @@ type MirrorResult = {
 
 export async function mirrorTrade(
   clob: any,
-  t: TradeRow,
+  t: TradeInput,
 ): Promise<MirrorResult> {
   if (t.side === "BUY" && !CFG.allowBuys)
     return { ok: false, reason: "buys disabled" };
@@ -740,45 +941,65 @@ export async function mirrorTrade(
   // round size DOWN to min-order increments
   const size = Math.floor(rawQty / minOrder) * minOrder;
   if (size < minOrder)
-    return { ok: false, reason: "min-order", intended: { price: targetPx, size } };
+    return {
+      ok: false,
+      reason: "min-order",
+      intended: { price: targetPx, size },
+    };
 
   const side = t.side === "BUY" ? Side.BUY : Side.SELL;
 
   try {
     // 3) Place a FAK (Fill-And-Kill) order for immediate execution
-    //    This is IOC semantics: fill whatever's immediately available, cancel the rest
+    //    Use createAndPostMarketOrder for FAK orders (market orders with immediate execution)
     recordReq("clob:post_order");
-    const resp = await clob.createAndPostOrder(
+
+    // Calculate the dollar amount to spend (for BUY) or shares to sell (for SELL)
+    const amount = side === Side.BUY ? notional : size;
+
+    const resp = await clob.createAndPostMarketOrder(
       {
         tokenID: t.asset,
-        price: Number(targetPx.toFixed(6)),
-        size: Number(size.toFixed(6)),
+        price: Number(targetPx.toFixed(6)), // Target price
+        amount: Number(amount.toFixed(6)), // $ for BUY, shares for SELL
         side,
+        orderType: OrderType.FAK, // Fill-And-Kill
       },
       { tickSize: tickSize.toString(), negRisk },
-      OrderType.FAK, // <<< immediate-or-cancel semantics
+      OrderType.FAK,
     );
 
-    const orderId: string | undefined = resp?.orderID ?? resp?.id;
-    if (!orderId) {
-      // If server rejected immediately, bubble reason if present.
-      const reason = resp?.errorMsg || "order rejected";
-      return { ok: false, reason, intended: { price: targetPx, size } };
+    // Check response
+    if (!resp?.success && resp?.errorMsg) {
+      return {
+        ok: false,
+        reason: resp.errorMsg,
+        intended: { price: targetPx, size },
+      };
     }
 
-    // With FAK, the remainder is already canceled by the exchange
-    // sizeMatched tells us what filled immediately
-    // If not present in response, fetch order status once
-    let filled = Number(resp?.sizeMatched ?? 0);
-    if (!resp?.sizeMatched && orderId) {
-      try {
-        recordReq("clob:get_orders");
-        const ord = await clob.getOrder(orderId);
-        filled = Number(ord?.order?.size_matched ?? ord?.size_matched ?? 0);
-      } catch {
-        // If getOrder fails, assume no fill
-        filled = 0;
-      }
+    const orderId: string | undefined = resp?.orderID;
+    if (!orderId) {
+      return {
+        ok: false,
+        reason: "no order ID",
+        intended: { price: targetPx, size },
+      };
+    }
+
+    // For FAK orders, takingAmount tells us what filled
+    // takingAmount is in shares for BUY, in USDC for SELL
+    const takingAmount = Number(resp?.takingAmount ?? 0);
+    const makingAmount = Number(resp?.makingAmount ?? 0);
+
+    // Calculate filled shares
+    let filled = 0;
+    if (side === Side.BUY) {
+      // For BUY: takingAmount is shares we got
+      filled = takingAmount;
+    } else {
+      // For SELL: makingAmount is USDC we got, divide by price to get shares sold
+      filled = targetPx > 0 ? makingAmount / targetPx : 0;
     }
 
     if (filled > 0 && CFG.allowPartial) {
@@ -863,11 +1084,12 @@ export class MarketWebSocket {
   private onTickSizeChangeCallback?: (event: WSTickSizeChangeEvent) => void;
   private isConnecting = false;
 
-  private readonly WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+  private readonly WS_URL =
+    "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
   connect(
     onLastTrade?: (trade: WSLastTradeEvent) => void,
-    onTickSizeChange?: (event: WSTickSizeChangeEvent) => void
+    onTickSizeChange?: (event: WSTickSizeChangeEvent) => void,
   ) {
     // If we don't have any tokens yet, defer the connection to avoid idle closes
     if (this.subscribedTokens.size === 0) return;
@@ -896,7 +1118,7 @@ export class MarketWebSocket {
 
     this.ws.on("message", (data: WebSocket.Data) => {
       const raw = data.toString();
-      
+
       // Handle PONG response
       if (raw === "PONG") return;
 
@@ -915,7 +1137,11 @@ export class MarketWebSocket {
     this.ws.on("close", () => {
       console.log("[WS] Connection closed, reconnecting in 5s...");
       this.cleanup();
-      this.reconnectTimer = setTimeout(() => this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback), 5000);
+      this.reconnectTimer = setTimeout(
+        () =>
+          this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback),
+        5000,
+      );
     });
   }
 
@@ -927,7 +1153,7 @@ export class MarketWebSocket {
       JSON.stringify({
         type: "market",
         assets_ids: Array.from(this.subscribedTokens),
-      })
+      }),
     );
     console.log(`[WS] Subscribed to ${this.subscribedTokens.size} tokens`);
   }
@@ -935,7 +1161,10 @@ export class MarketWebSocket {
   private handleEvent(event: WSEvent) {
     if (event.event_type === "last_trade_price" && this.onLastTradeCallback) {
       this.onLastTradeCallback(event);
-    } else if (event.event_type === "tick_size_change" && this.onTickSizeChangeCallback) {
+    } else if (
+      event.event_type === "tick_size_change" &&
+      this.onTickSizeChangeCallback
+    ) {
       this.onTickSizeChangeCallback(event);
     }
     // Ignore book and price_change events for now
@@ -944,14 +1173,19 @@ export class MarketWebSocket {
   subscribeToToken(tokenId: string) {
     this.subscribedTokens.add(tokenId);
     // If not connected yet, connect now that we have at least 1 token
-    if (!this.ws) this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback);
+    if (!this.ws)
+      this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback);
     this.flushSubscription();
   }
 
   unsubscribeFromToken(tokenId: string) {
     this.subscribedTokens.delete(tokenId);
-    
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.subscribedTokens.size > 0) {
+
+    if (
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      this.subscribedTokens.size > 0
+    ) {
       this.flushSubscription();
     }
   }

@@ -2,105 +2,159 @@ import { CFG } from "./config.js";
 import { makeClobClient } from "./clients.js";
 import { resolveHandleToProxyWallet } from "./gamma.js";
 import { getUserTrades } from "./data.js";
-import { mirrorTrade } from "./trader.js";
+import { mirrorTrade, TradeInput } from "./trader.js";
 import { printTradeCard, printMirrorLine, timeAgo } from "./logger.js";
-import { TokenBucket, nextDelay } from "./poll.js";
 import { printRateStatus } from "./rate.js";
-import { MarketWebSocket } from "./websocket.js";
-import { updateTickSize } from "./book.js";
+import {
+  PolymarketRealTimeClient,
+  ActivityTrade,
+  ConnectionStatus,
+} from "./realtime.js";
 
 (async () => {
   const { client } = await makeClobClient();
 
   const target = CFG.targetHandle;
   const targetWallet = await resolveHandleToProxyWallet(target);
-  console.log(`Following ${target} at ${targetWallet}`);
+  console.log(`\n🎯 Following ${target} at ${targetWallet}`);
+  console.log(`💰 Max notional per trade: $${CFG.maxNotional}`);
+  console.log(
+    `📊 Buys: ${CFG.allowBuys ? "✅" : "❌"} | Sells: ${CFG.allowSells ? "✅" : "❌"}\n`,
+  );
 
   const seen = new Set<string>();
   let watermark = Math.floor(Date.now() / 1000) - 2; // start ~now, allow tiny skew
 
-  const bucket = new TokenBucket(CFG.maxTradesRPS, 1.0);
+  // Stats tracking
+  let wsTradeCount = 0;
+  let httpTradeCount = 0;
+  let mirrorSuccessCount = 0;
+  let mirrorFailCount = 0;
 
-  // Track tokens we've seen to subscribe to WebSocket
-  const seenTokens = new Set<string>();
+  // Initialize real-time WebSocket client (PRIMARY detection method)
+  const rtClient = new PolymarketRealTimeClient(targetWallet);
 
-  // Initialize WebSocket for real-time events
-  const ws = new MarketWebSocket();
-  if (CFG.useWebSocket) {
-    // Seed tokens from the first fetch so WS subscribes immediately
-    const seedRows = await getUserTrades(targetWallet, Math.max(5, CFG.tradesLimit));
-    for (const r of seedRows) seenTokens.add(r.asset);
-    for (const tok of seenTokens) ws.subscribeToToken(tok);
+  rtClient.onStatus((status: ConnectionStatus) => {
+    if (status === ConnectionStatus.CONNECTED) {
+      console.log(
+        "✅ Real-time WebSocket connected - ultra-low latency mode active",
+      );
+    } else if (status === ConnectionStatus.DISCONNECTED) {
+      console.warn(
+        "⚠️  Real-time WebSocket disconnected - falling back to HTTP polling",
+      );
+    }
+  });
 
-    ws.connect(
-      async (trade) => {
-        // WebSocket last_trade_price event - mirror immediately
-        console.log(`[WS] Trade: ${trade.side} ${trade.size} @ ${trade.price} on ${trade.asset_id}`);
-        
-        // Convert WS event to TradeRow format and mirror
-        const wsTradeRow = {
-          proxyWallet: targetWallet,
-          side: trade.side,
-          asset: trade.asset_id,
-          conditionId: trade.market,
-          price: Number(trade.price),
-          size: Number(trade.size),
-          timestamp: trade.timestamp,
-          transactionHash: `ws-${trade.asset_id}-${trade.timestamp}`,
-        };
-        
-        // Check if we've already seen this (avoid duplicate from HTTP poll)
-        const wsKey = `${trade.asset_id}-${trade.timestamp}-${trade.price}`;
-        if (!seen.has(wsKey)) {
-          seen.add(wsKey);
-          const result = await mirrorTrade(client, wsTradeRow);
-          if (result.ok) {
-            printMirrorLine(true, trade.side, trade.asset_id, result.price, result.filled ?? result.size);
-          } else {
-            printMirrorLine(false, trade.side, trade.asset_id, result.intended?.price, result.intended?.size, result.reason);
-          }
-        }
-      },
-      (tickChange) => {
-        // Update cache when tick size changes
-        console.log(`[WS] Tick size changed for ${tickChange.asset_id}: ${tickChange.tick_size}`);
-        updateTickSize(tickChange.asset_id, Number(tickChange.tick_size));
-      }
+  rtClient.onTrade(async (trade: ActivityTrade) => {
+    wsTradeCount++;
+
+    // Deduplication key
+    const tradeKey = `${trade.transactionHash}`;
+    if (seen.has(tradeKey)) {
+      return; // Already processed
+    }
+    seen.add(tradeKey);
+
+    // Update watermark
+    watermark = Math.max(watermark, trade.timestamp);
+
+    // Print trade card
+    const marketName = trade.title || trade.slug || trade.conditionId;
+    const shares = trade.size;
+    const usd = shares * trade.price;
+    printTradeCard({
+      side: trade.side,
+      market: marketName,
+      outcome:
+        trade.outcome ??
+        (typeof trade.outcomeIndex === "number"
+          ? `Outcome ${trade.outcomeIndex}`
+          : "Outcome"),
+      price: trade.price,
+      shares,
+      usd,
+      when: timeAgo(trade.timestamp),
+      ...(trade.slug && { slug: trade.slug }),
+    });
+
+    // Convert to TradeInput and mirror
+    const tradeInput: TradeInput = {
+      proxyWallet: trade.proxyWallet,
+      side: trade.side,
+      asset: trade.asset,
+      conditionId: trade.conditionId,
+      price: trade.price,
+      size: trade.size,
+      timestamp: trade.timestamp,
+      transactionHash: trade.transactionHash,
+      ...(trade.outcome && { outcome: trade.outcome }),
+      ...(typeof trade.outcomeIndex === "number" && {
+        outcomeIndex: trade.outcomeIndex,
+      }),
+      ...(trade.slug && { slug: trade.slug }),
+      ...(trade.title && { title: trade.title }),
+    };
+
+    const result = await mirrorTrade(client, tradeInput);
+    if (result.ok) {
+      mirrorSuccessCount++;
+      printMirrorLine(
+        true,
+        trade.side,
+        trade.asset,
+        result.price,
+        result.filled ?? result.size,
+      );
+    } else {
+      mirrorFailCount++;
+      printMirrorLine(
+        false,
+        trade.side,
+        trade.asset,
+        result.intended?.price,
+        result.intended?.size,
+        result.reason,
+      );
+    }
+  });
+
+  // Connect to real-time stream
+  rtClient.connect();
+
+  // Print rate status and stats every 10 seconds
+  setInterval(() => {
+    printRateStatus();
+    console.log(
+      `📈 Stats: WS=${wsTradeCount} HTTP=${httpTradeCount} Success=${mirrorSuccessCount} Fail=${mirrorFailCount}`,
     );
-  }
+  }, 10000);
 
-  // Print rate status every 5 seconds
-  setInterval(printRateStatus, 5000);
-
-  async function runLoop() {
+  // HTTP polling as BACKUP ONLY (every 5 seconds)
+  // This catches anything the WebSocket might miss (rare)
+  async function backupPoll() {
     try {
-      // obey rate limiter
-      if (!bucket.take()) {
-        setTimeout(runLoop, nextDelay());
-        return;
-      }
       const rows = await getUserTrades(targetWallet, CFG.tradesLimit);
-      
-      // Process trades in parallel for lower latency
+
       const newTrades = rows
         .slice()
         .reverse()
         .filter((t) => {
           if (t.timestamp < watermark) return false;
-          watermark = Math.max(watermark, t.timestamp);
           if (seen.has(t.transactionHash)) return false;
           seen.add(t.transactionHash);
-          
-          // Subscribe to token WebSocket if enabled (use tokenId, not conditionId)
-          if (CFG.useWebSocket && !seenTokens.has(t.asset)) {
-            seenTokens.add(t.asset);
-            ws.subscribeToToken(t.asset);
-          }
-          
+          watermark = Math.max(watermark, t.timestamp);
           return true;
         });
 
-      // Process all new trades in parallel
+      if (newTrades.length > 0) {
+        httpTradeCount += newTrades.length;
+        console.log(
+          `[HTTP BACKUP] Caught ${newTrades.length} trades missed by WebSocket`,
+        );
+      }
+
+      // Process backup trades
       await Promise.allSettled(
         newTrades.map(async (t) => {
           const marketName = t.title || t.slug || t.conditionId;
@@ -123,6 +177,7 @@ import { updateTickSize } from "./book.js";
 
           const result = await mirrorTrade(client, t);
           if (result.ok) {
+            mirrorSuccessCount++;
             printMirrorLine(
               true,
               t.side,
@@ -131,6 +186,7 @@ import { updateTickSize } from "./book.js";
               result.filled ?? result.size,
             );
           } else {
+            mirrorFailCount++;
             printMirrorLine(
               false,
               t.side,
@@ -140,23 +196,25 @@ import { updateTickSize } from "./book.js";
               result.reason,
             );
           }
-        })
+        }),
       );
 
-
-      setTimeout(runLoop, nextDelay());
+      setTimeout(backupPoll, CFG.pollMs);
     } catch (e: any) {
-      // simple backoff on known throttling/gateway issues
       const status = e?.response?.status || 0;
-      const retry = status === 429 || status >= 500 ? 280 : nextDelay();
-      console.warn("poll error", e?.response?.data || e.message || e);
-      setTimeout(runLoop, retry);
+      const retry = status === 429 || status >= 500 ? 10000 : CFG.pollMs;
+      console.warn("[HTTP BACKUP] Error:", e?.response?.data || e.message || e);
+      setTimeout(backupPoll, retry);
     }
   }
 
-  // kickoff
+  // Start backup polling
   console.log(
-    `Monitoring ${target} for new trades (watermark: ${new Date(watermark * 1000).toISOString()})...`,
+    `🔄 Starting backup HTTP polling (every ${CFG.pollMs / 1000}s)...`,
   );
-  runLoop();
+  setTimeout(backupPoll, CFG.pollMs);
+
+  console.log(`\n⚡ Ultra-low latency copy trading active!`);
+  console.log(`📡 Primary: Real-time WebSocket (~10-50ms latency)`);
+  console.log(`🔄 Backup: HTTP polling every ${CFG.pollMs / 1000}s\n`);
 })();

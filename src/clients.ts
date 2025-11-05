@@ -49,7 +49,7 @@ export async function makeClobClient() {
   // 🚨 Hard-fail: you cannot place/cancel orders without API creds
   if (!creds) {
     throw new Error(
-      "Could not create/derive API credentials. Check PRIVATE_KEY (0x-hex), system clock, and PROXY_WALLET for proxy mode."
+      "Could not create/derive API credentials. Check PRIVATE_KEY (0x-hex), system clock, and PROXY_WALLET for proxy mode.",
     );
   }
 

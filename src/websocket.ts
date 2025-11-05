@@ -50,11 +50,12 @@ export class MarketWebSocket {
   private onTickSizeChangeCallback?: (event: WSTickSizeChangeEvent) => void;
   private isConnecting = false;
 
-  private readonly WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+  private readonly WS_URL =
+    "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
   connect(
     onLastTrade?: (trade: WSLastTradeEvent) => void,
-    onTickSizeChange?: (event: WSTickSizeChangeEvent) => void
+    onTickSizeChange?: (event: WSTickSizeChangeEvent) => void,
   ) {
     // If we don't have any tokens yet, defer the connection to avoid idle closes
     if (this.subscribedTokens.size === 0) return;
@@ -83,7 +84,7 @@ export class MarketWebSocket {
 
     this.ws.on("message", (data: WebSocket.Data) => {
       const raw = data.toString();
-      
+
       // Handle PONG response
       if (raw === "PONG") return;
 
@@ -102,7 +103,11 @@ export class MarketWebSocket {
     this.ws.on("close", () => {
       console.log("[WS] Connection closed, reconnecting in 5s...");
       this.cleanup();
-      this.reconnectTimer = setTimeout(() => this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback), 5000);
+      this.reconnectTimer = setTimeout(
+        () =>
+          this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback),
+        5000,
+      );
     });
   }
 
@@ -114,7 +119,7 @@ export class MarketWebSocket {
       JSON.stringify({
         type: "market",
         assets_ids: Array.from(this.subscribedTokens),
-      })
+      }),
     );
     console.log(`[WS] Subscribed to ${this.subscribedTokens.size} tokens`);
   }
@@ -122,7 +127,10 @@ export class MarketWebSocket {
   private handleEvent(event: WSEvent) {
     if (event.event_type === "last_trade_price" && this.onLastTradeCallback) {
       this.onLastTradeCallback(event);
-    } else if (event.event_type === "tick_size_change" && this.onTickSizeChangeCallback) {
+    } else if (
+      event.event_type === "tick_size_change" &&
+      this.onTickSizeChangeCallback
+    ) {
       this.onTickSizeChangeCallback(event);
     }
     // Ignore book and price_change events for now
@@ -131,14 +139,19 @@ export class MarketWebSocket {
   subscribeToToken(tokenId: string) {
     this.subscribedTokens.add(tokenId);
     // If not connected yet, connect now that we have at least 1 token
-    if (!this.ws) this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback);
+    if (!this.ws)
+      this.connect(this.onLastTradeCallback, this.onTickSizeChangeCallback);
     this.flushSubscription();
   }
 
   unsubscribeFromToken(tokenId: string) {
     this.subscribedTokens.delete(tokenId);
-    
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.subscribedTokens.size > 0) {
+
+    if (
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      this.subscribedTokens.size > 0
+    ) {
       this.flushSubscription();
     }
   }
