@@ -1,10 +1,8 @@
 import { CFG } from "./config.js";
-import { getBook, roundToTick } from "./book.js";
+import { getConstraints, roundToTick } from "./book.js";
 import type { TradeRow } from "./data.js";
 import { OrderType, Side } from "@polymarket/clob-client";
 import { recordReq } from "./rate.js";
-
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 type MirrorResult = {
   ok: boolean;
@@ -25,87 +23,69 @@ export async function mirrorTrade(
   if (t.side === "SELL" && !CFG.allowSells)
     return { ok: false, reason: "sells disabled" };
 
-  // 1) Fetch book constraints (tick/min/neg-risk) for this token.
-  const { tickSize, minOrder, negRisk } = await getBook(t.asset);
+  // 1) Fetch cached constraints (tick/min/neg-risk) for this token.
+  const { tickSize, minOrder, negRisk } = await getConstraints(t.asset);
 
   // 2) Compute exact price & capped size (strict price).
-  const price = roundToTick(t.price, tickSize);
-  const notional = Math.min(CFG.maxNotional, 5); // extra guard, per your $5 test budget
-  const rawQty = notional / price;
+  const targetPx = roundToTick(t.price, tickSize);
+  const notional = CFG.maxNotional;
+  const rawQty = notional / Math.max(targetPx, 0.01);
 
   // round size DOWN to min-order increments
   const size = Math.floor(rawQty / minOrder) * minOrder;
   if (size < minOrder)
-    return { ok: false, reason: "min-order", intended: { price, size } };
+    return { ok: false, reason: "min-order", intended: { price: targetPx, size } };
 
   const side = t.side === "BUY" ? Side.BUY : Side.SELL;
 
   try {
-    // 3) Place a GTC limit at EXACT price (strict). If the book moved, it will rest briefly.
+    // 3) Place a FAK (Fill-And-Kill) order for immediate execution
+    //    This is IOC semantics: fill whatever's immediately available, cancel the rest
     recordReq("clob:post_order");
     const resp = await clob.createAndPostOrder(
       {
         tokenID: t.asset,
-        price: Number(price.toFixed(6)),
+        price: Number(targetPx.toFixed(6)),
         size: Number(size.toFixed(6)),
         side,
       },
       { tickSize: tickSize.toString(), negRisk },
-      OrderType.GTC,
+      OrderType.FAK, // <<< immediate-or-cancel semantics
     );
 
     const orderId: string | undefined = resp?.orderID ?? resp?.id;
     if (!orderId) {
       // If server rejected immediately, bubble reason if present.
       const reason = resp?.errorMsg || "order rejected";
-      return { ok: false, reason, intended: { price, size } };
+      return { ok: false, reason, intended: { price: targetPx, size } };
     }
 
-    // 4) Wait up to cancelMs for a fill (emulates IOC/FAK behavior without slippage).
-    await sleep(CFG.cancelMs);
-
-    // 5) Check the order status / matched size
-    //    (Get Order returns size_matched, status, etc.)
-    //    https://docs.polymarket.com/developers/CLOB/orders/get-order
-    let filled = 0;
-    try {
-      recordReq("clob:get_orders");
-      const ord = await clob.getOrder(orderId);
-      const sm = Number(ord?.order?.size_matched ?? ord?.size_matched ?? 0);
-      filled = Number.isFinite(sm) ? sm : 0;
-    } catch {
-      // If getOrder hiccups, continue to cancel; matcher will have a canonical view.
+    // With FAK, the remainder is already canceled by the exchange
+    // sizeMatched tells us what filled immediately
+    // If not present in response, fetch order status once
+    let filled = Number(resp?.sizeMatched ?? 0);
+    if (!resp?.sizeMatched && orderId) {
+      try {
+        recordReq("clob:get_orders");
+        const ord = await clob.getOrder(orderId);
+        filled = Number(ord?.order?.size_matched ?? ord?.size_matched ?? 0);
+      } catch {
+        // If getOrder fails, assume no fill
+        filled = 0;
+      }
     }
-
-    // 6) If fully filled: done. If partially or not filled: cancel remainder.
-    if (filled >= size - 1e-9) {
-      return { ok: true, orderId, price, size, filled };
-    }
-
-    try {
-      // Cancel by ID (DELETE /order with orderID).
-      // https://docs.polymarket.com/developers/CLOB/orders/cancel-orders
-      recordReq("clob:delete_order");
-      await clob.cancel(orderId);
-    } catch (e: any) {
-      // If cancel fails (already filled/canceled), we'll re-query once to compute final fill.
-    }
-
-    // Re-check to report final filled amount after cancel attempt.
-    try {
-      recordReq("clob:get_orders");
-      const ord2 = await clob.getOrder(orderId);
-      const sm2 = Number(ord2?.order?.size_matched ?? ord2?.size_matched ?? 0);
-      filled = Number.isFinite(sm2) ? sm2 : filled;
-    } catch {}
 
     if (filled > 0 && CFG.allowPartial) {
-      return { ok: true, orderId, price, size, filled };
+      return { ok: true, orderId, price: targetPx, size, filled };
     }
+    if (filled >= size - 1e-9) {
+      return { ok: true, orderId, price: targetPx, size, filled };
+    }
+
     return {
       ok: false,
-      reason: "no fill within window",
-      intended: { price, size },
+      reason: "no immediate fill",
+      intended: { price: targetPx, size },
     };
   } catch (e: any) {
     const err = e?.response?.data?.error || e?.message || "unknown";
@@ -117,7 +97,6 @@ export async function mirrorTrade(
       );
     }
     // Typical server messages include NOT_ENOUGH_BALANCE/ALLOWANCE, INVALID_ORDER_MIN_TICK_SIZE, etc.
-    // https://docs.polymarket.com/developers/CLOB/orders/create-order
-    return { ok: false, reason: err, intended: { price, size } };
+    return { ok: false, reason: err, intended: { price: targetPx, size } };
   }
 }

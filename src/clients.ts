@@ -42,11 +42,15 @@ export async function makeClobClient() {
         wallet,
       ).createApiKey?.();
     } catch (e: any) {
-      console.warn(
-        "[CLOB] createApiKey failed; continuing without cached creds",
-        e?.response?.data || e,
-      );
+      console.warn("[CLOB] createApiKey failed", e?.response?.data || e);
     }
+  }
+
+  // 🚨 Hard-fail: you cannot place/cancel orders without API creds
+  if (!creds) {
+    throw new Error(
+      "Could not create/derive API credentials. Check PRIVATE_KEY (0x-hex), system clock, and PROXY_WALLET for proxy mode."
+    );
   }
 
   // IMPORTANT: pass signatureType + funder when using a proxy
