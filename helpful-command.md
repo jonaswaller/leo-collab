@@ -1,1 +1,1 @@
-echo "# Codebase" > codebase.md && for file in src/*.ts; do [ -f "$file" ] || continue; echo -e "\n## $file\n" >> codebase.md && echo '```typescript' >> codebase.md && cat "$file" >> codebase.md && echo '```' >> codebase.md; done
+echo "# Codebase" > codebase.md && for file in src/\*.ts; do [ -f "$file" ] || continue; echo -e "\n## $file\n" >> codebase.md && echo '```typescript' >> codebase.md && cat "$file" >> codebase.md && echo '```' >> codebase.md; done
