@@ -347,17 +347,11 @@ import { getUserTrades } from "./data.js";
 import { mirrorTrade, TradeInput } from "./trader.js";
 import { printTradeCard, printMirrorLine, timeAgo } from "./logger.js";
 import { printRateStatus } from "./rate.js";
-import { PolymarketRealTimeClient, ActivityTrade } from "./realtime.js";
-
-// ConnectionStatus enum values
-const ConnectionStatus = {
-  CONNECTING: "CONNECTING",
-  CONNECTED: "CONNECTED",
-  DISCONNECTED: "DISCONNECTED",
-} as const;
-
-type ConnectionStatus =
-  (typeof ConnectionStatus)[keyof typeof ConnectionStatus];
+import {
+  PolymarketRealTimeClient,
+  ActivityTrade,
+  ConnectionStatus,
+} from "./realtime.js";
 
 (async () => {
   const { client } = await makeClobClient();
@@ -777,7 +771,7 @@ type Message = {
   connection_id: string;
 };
 
-enum ConnectionStatus {
+export enum ConnectionStatus {
   CONNECTING = "CONNECTING",
   CONNECTED = "CONNECTED",
   DISCONNECTED = "DISCONNECTED",
@@ -852,10 +846,19 @@ export class PolymarketRealTimeClient {
 
     const trade = message.payload as ActivityTrade;
 
+    // Debug: Log all trades we see
+    console.log(
+      `[WS DEBUG] Trade from ${trade.proxyWallet.substring(0, 10)}... ${trade.side} ${trade.size} @ ${trade.price} (tx: ${trade.transactionHash.substring(0, 10)}...)`,
+    );
+
     // Filter by target wallet
     if (trade.proxyWallet.toLowerCase() !== this.targetWallet) {
       return;
     }
+
+    console.log(
+      `[WS MATCH] ✅ Target trader detected! tx: ${trade.transactionHash.substring(0, 20)}...`,
+    );
 
     // Call the registered handler
     if (this.onTradeHandler) {
@@ -935,17 +938,42 @@ export async function mirrorTrade(
 
   // 2) Compute exact price & capped size (strict price).
   const targetPx = roundToTick(t.price, tickSize);
-  const notional = CFG.maxNotional;
+
+  // ============================================================================
+  // 🧪 TESTING MODE: FIXED $1 SPEND PER TRADE
+  // ============================================================================
+  // This is TEMPORARY for testing latency and detection.
+  //
+  // Current behavior:
+  // - Spends exactly $1 per trade (Polymarket minimum)
+  // - Calculates shares: $1 / price
+  // - Rounds down to minimum order size increments
+  // - Skips if $1 doesn't meet minimum order size
+  //
+  // For PRODUCTION, replace with:
+  //   const notional = CFG.maxNotional;
+  //
+  // This will use the MAX_NOTIONAL_USDC from .env (default $5)
+  // ============================================================================
+  const notional = 1.0; // 🧪 TESTING: $1 exactly (change to CFG.maxNotional for production)
   const rawQty = notional / Math.max(targetPx, 0.01);
 
-  // round size DOWN to min-order increments
-  const size = Math.floor(rawQty / minOrder) * minOrder;
-  if (size < minOrder)
-    return {
-      ok: false,
-      reason: "min-order",
-      intended: { price: targetPx, size },
-    };
+  // Round size DOWN to min-order increments
+  let size = Math.floor(rawQty / minOrder) * minOrder;
+  let actualNotional = notional;
+
+  if (size < minOrder) {
+    // If $1 doesn't buy enough shares, use minimum order size instead
+    size = minOrder;
+    actualNotional = minOrder * targetPx;
+    console.log(
+      `[TEST MODE] $1 too small, buying minimum ${minOrder} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
+    );
+  } else {
+    console.log(
+      `[TEST MODE] Buying ${size} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
+    );
+  }
 
   const side = t.side === "BUY" ? Side.BUY : Side.SELL;
 
@@ -955,7 +983,7 @@ export async function mirrorTrade(
     recordReq("clob:post_order");
 
     // Calculate the dollar amount to spend (for BUY) or shares to sell (for SELL)
-    const amount = side === Side.BUY ? notional : size;
+    const amount = side === Side.BUY ? actualNotional : size;
 
     const resp = await clob.createAndPostMarketOrder(
       {
