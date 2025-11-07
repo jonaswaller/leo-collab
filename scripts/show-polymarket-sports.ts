@@ -6,7 +6,7 @@ dotenv.config();
 const GAMMA_API = process.env.GAMMA_API || "https://gamma-api.polymarket.com";
 const TIME_WINDOW_HOURS = 6;
 const MIN_LIQUIDITY = 1000;
-const VERBOSE = process.env.VERBOSE === "true" || false;
+const VERBOSE = "true"
 
 // Color palette for different events (cycles through)
 const EVENT_COLORS = [
@@ -81,7 +81,19 @@ async function getSportsMetadata(): Promise<SportMetadata[]> {
       });
     }
 
-    return response.data;
+    // Fix: Add missing tag 102114 (NCAA Basketball) to CBB sport
+    // The /sports endpoint doesn't include this tag, but CBB events actually use it
+    const sportsData = response.data.map(sport => {
+      if (sport.sport === 'cbb') {
+        const tags = sport.tags.split(',');
+        if (!tags.includes('102114')) {
+          return { ...sport, tags: sport.tags + ',102114' };
+        }
+      }
+      return sport;
+    });
+
+    return sportsData;
   } catch (error) {
     console.error("   ✗ Failed to fetch sports metadata:", error);
     throw error;
