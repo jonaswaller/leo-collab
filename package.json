@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "tsx src/index.ts",
-    "show-polymarket": "tsx scripts/show-polymarket-sports.ts"
+    "show-pm-markets": "tsx scripts/show-pm-markets.ts"
   },
   "keywords": [],
   "author": "",

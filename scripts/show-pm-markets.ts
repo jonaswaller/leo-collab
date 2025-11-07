@@ -4,9 +4,10 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const GAMMA_API = process.env.GAMMA_API || "https://gamma-api.polymarket.com";
-const TIME_WINDOW_HOURS = 6;
+const TIME_WINDOW_HOURS = 24;
 const MIN_LIQUIDITY = 1000;
 const VERBOSE = "true"
+//const VERBOSE = "false"
 
 // Color palette for different events (cycles through)
 const EVENT_COLORS = [
@@ -322,9 +323,11 @@ async function main() {
     // Step 2: For each sport, fetch events
     const seenEventIds = new Set<string>();
     const uniqueEvents: PolymarketEvent[] = [];
+    const eventsBySport = new Map<string, PolymarketEvent[]>();
 
     for (const sport of sports) {
       const tagIds = sport.tags.split(",").filter((t) => t.trim());
+      const sportEvents: PolymarketEvent[] = [];
 
       for (const tagId of tagIds) {
         const events = await getEventsForTag(tagId.trim(), sport.sport);
@@ -334,8 +337,13 @@ async function main() {
           if (!seenEventIds.has(event.id)) {
             seenEventIds.add(event.id);
             uniqueEvents.push(event);
+            sportEvents.push(event);
           }
         });
+      }
+
+      if (sportEvents.length > 0) {
+        eventsBySport.set(sport.sport, sportEvents);
       }
     }
 
@@ -346,20 +354,56 @@ async function main() {
       displayMarketDetails(event);
     });
 
-    console.log(
-      "\n═══════════════════════════════════════════════════════════════════",
-    );
-    console.log("📈 SUMMARY");
-    console.log(
-      "═══════════════════════════════════════════════════════════════════",
-    );
-    console.log(`✓ Total Sports Scanned:     ${sports.length}`);
-    console.log(`✓ Unique Events Found:      ${uniqueEvents.length}`);
-    console.log(`✓ Total Markets Found:      ${totalMarketsFound}`);
-    console.log(`✓ Time Window:              ${TIME_WINDOW_HOURS} hours`);
-    console.log(
-      "═══════════════════════════════════════════════════════════════════\n",
-    );
+    // Step 4: Display enhanced summary
+    console.log("\n\x1b[1m\x1b[97m" + "═".repeat(80) + "\x1b[0m");
+    console.log("\x1b[1m\x1b[97m" + " ".repeat(32) + "SUMMARY" + " ".repeat(41) + "\x1b[0m");
+    console.log("\x1b[1m\x1b[97m" + "═".repeat(80) + "\x1b[0m\n");
+
+    // Overall stats
+    console.log("\x1b[1m\x1b[36mOVERALL STATISTICS\x1b[0m");
+    console.log("\x1b[90m" + "─".repeat(80) + "\x1b[0m");
+    console.log(`  \x1b[97mTotal Sports Scanned:\x1b[0m        ${sports.length}`);
+    console.log(`  \x1b[97mSports with Events:\x1b[0m          \x1b[32m${eventsBySport.size}\x1b[0m`);
+    console.log(`  \x1b[97mTotal Events Found:\x1b[0m          \x1b[32m${uniqueEvents.length}\x1b[0m`);
+    console.log(`  \x1b[97mTotal Markets Found:\x1b[0m         \x1b[32m${totalMarketsFound}\x1b[0m`);
+    console.log(`  \x1b[97mTime Window:\x1b[0m                 Past ${TIME_WINDOW_HOURS} hours`);
+    console.log(`  \x1b[97mMin Liquidity Filter:\x1b[0m        $${MIN_LIQUIDITY.toLocaleString()}`);
+
+    if (eventsBySport.size > 0) {
+      console.log("\n\x1b[1m\x1b[36mBREAKDOWN BY SPORT\x1b[0m");
+      console.log("\x1b[90m" + "─".repeat(80) + "\x1b[0m");
+
+      // Sort sports by number of events (descending)
+      const sortedSports = Array.from(eventsBySport.entries()).sort(
+        (a, b) => b[1].length - a[1].length
+      );
+
+      sortedSports.forEach(([sportName, events], idx) => {
+        const totalMarkets = events.reduce((sum, e) => sum + e.markets.length, 0);
+        console.log(
+          `\n  \x1b[1m\x1b[33m[${idx + 1}] ${sportName.toUpperCase()}\x1b[0m`
+        );
+        console.log(`      Events:  \x1b[32m${events.length}\x1b[0m`);
+        console.log(`      Markets: \x1b[32m${totalMarkets}\x1b[0m`);
+
+        events.forEach((event, eventIdx) => {
+          const startTime = event.startTime || event.startDate || event.eventDate;
+          const timeAgo = startTime
+            ? Math.round((Date.now() - new Date(startTime).getTime()) / (1000 * 60))
+            : null;
+          const timeStr = timeAgo !== null ? `${timeAgo}m ago` : "Unknown";
+          
+          console.log(
+            `      ${eventIdx + 1}. \x1b[97m${event.title}\x1b[0m`
+          );
+          console.log(
+            `         \x1b[90mMarkets: ${event.markets.length} | Liquidity: $${event.liquidity?.toFixed(0) || "0"} | Started: ${timeStr}\x1b[0m`
+          );
+        });
+      });
+    }
+
+    console.log("\n\x1b[1m\x1b[97m" + "═".repeat(80) + "\x1b[0m\n");
   } catch (error) {
     console.error("\n❌ Fatal error:", error);
     process.exit(1);
