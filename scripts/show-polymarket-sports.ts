@@ -5,6 +5,7 @@ dotenv.config();
 
 const GAMMA_API = process.env.GAMMA_API || "https://gamma-api.polymarket.com";
 const TIME_WINDOW_HOURS = 6;
+const MIN_LIQUIDITY = 1000;
 const VERBOSE = process.env.VERBOSE === "true" || false;
 
 // Color palette for different events (cycles through)
@@ -33,6 +34,7 @@ interface PolymarketMarket {
   lastTradePrice: number | null;
   volume24hr: number | null;
   liquidity: string | null;
+  liquidityNum: number | null;
   clobTokenIds: string | null;
 }
 
@@ -47,6 +49,7 @@ interface PolymarketEvent {
   closed: boolean | null;
   live: boolean | null;
   ended: boolean | null;
+  liquidity: number | null;
   markets: PolymarketMarket[];
   tags: Array<{ id: number; label: string }>;
   category: string | null;
@@ -134,14 +137,68 @@ async function getEventsForTag(
       );
     }
 
-    // Filter by time window
-    const filteredEvents = response.data.filter((event) => {
-      const startTime = event.startTime || event.startDate || event.eventDate;
-      if (!startTime) return false;
+    // Filter by time window and liquidity
+    const filteredEvents = response.data
+      .filter((event) => {
+        // Check event-level liquidity first
+        const eventLiquidity = parseFloat(event.liquidity?.toString() || "0");
+        if (eventLiquidity < MIN_LIQUIDITY) {
+          if (VERBOSE && event.title?.toLowerCase().includes("wright")) {
+            console.log(`   ⚠️  ${event.title} filtered: liquidity $${eventLiquidity} < $${MIN_LIQUIDITY}`);
+          }
+          return false;
+        }
 
-      const eventStart = new Date(startTime);
-      return eventStart >= now && eventStart <= futureWindow;
-    });
+        // Try event-level timestamps first
+        let startTime = event.startTime || event.eventDate;
+
+        // If no valid event-level time, check the first market's gameStartTime
+        if (!startTime || new Date(startTime) < now) {
+          const firstMarket = event.markets?.[0];
+          if (firstMarket?.gameStartTime) {
+            startTime = firstMarket.gameStartTime;
+          } else if (event.endDate) {
+            // Fallback to endDate for events (game time is often in endDate for CBB)
+            startTime = event.endDate;
+          }
+        }
+
+        if (!startTime) {
+          if (VERBOSE && event.title?.toLowerCase().includes("wright")) {
+            console.log(`   ⚠️  ${event.title} filtered: no valid start time`);
+          }
+          return false;
+        }
+
+        const eventStart = new Date(startTime);
+        const isInWindow = eventStart >= now && eventStart <= futureWindow;
+        
+        if (VERBOSE && event.title?.toLowerCase().includes("wright")) {
+          console.log(`   🔍 ${event.title}:`);
+          console.log(`      Liquidity: $${eventLiquidity}`);
+          console.log(`      Start: ${startTime} (${eventStart.toISOString()})`);
+          console.log(`      Now: ${now.toISOString()}`);
+          console.log(`      Window: ${futureWindow.toISOString()}`);
+          console.log(`      In window: ${isInWindow}`);
+        }
+        
+        return isInWindow;
+      })
+      .map((event) => {
+        // Filter markets by liquidity
+        const filteredMarkets = event.markets.filter((market) => {
+          const marketLiquidity =
+            market.liquidityNum || parseFloat(market.liquidity || "0");
+          return marketLiquidity >= MIN_LIQUIDITY;
+        });
+
+        // Return event with filtered markets
+        return {
+          ...event,
+          markets: filteredMarkets,
+        };
+      })
+      .filter((event) => event.markets.length > 0); // Only keep events with at least one market
 
     if (VERBOSE) {
       console.log(
@@ -175,6 +232,7 @@ function displayMarketDetails(event: PolymarketEvent) {
   );
   console.log(`│ Event ID:     ${event.id}`);
   console.log(`│ Slug:         ${event.slug}`);
+  console.log(`│ Liquidity:    $${event.liquidity?.toFixed(2) || "0"}`);
   console.log(`│ Start Time:   ${startTime || "Unknown"}`);
   console.log(
     `│ Time Until:   ${timeUntilStart ? `${timeUntilStart} minutes` : "Unknown"}`,
@@ -239,6 +297,7 @@ async function main() {
   console.log(
     `⏰ Scanning for games starting within next ${TIME_WINDOW_HOURS} hours`,
   );
+  console.log(`💰 Minimum liquidity: $${MIN_LIQUIDITY.toLocaleString()}`);
   console.log(`🌐 Gamma API: ${GAMMA_API}`);
   console.log(
     "═══════════════════════════════════════════════════════════════════\n",
@@ -249,23 +308,31 @@ async function main() {
     const sports = await getSportsMetadata();
 
     // Step 2: For each sport, fetch events
-    let totalEventsFound = 0;
-    let totalMarketsFound = 0;
+    const seenEventIds = new Set<string>();
+    const uniqueEvents: PolymarketEvent[] = [];
 
     for (const sport of sports) {
       const tagIds = sport.tags.split(",").filter((t) => t.trim());
 
       for (const tagId of tagIds) {
         const events = await getEventsForTag(tagId.trim(), sport.sport);
-        totalEventsFound += events.length;
 
-        // Step 3: Display each event and its markets
+        // Deduplicate by event ID
         events.forEach((event) => {
-          totalMarketsFound += event.markets.length;
-          displayMarketDetails(event);
+          if (!seenEventIds.has(event.id)) {
+            seenEventIds.add(event.id);
+            uniqueEvents.push(event);
+          }
         });
       }
     }
+
+    // Step 3: Display each unique event and its markets
+    let totalMarketsFound = 0;
+    uniqueEvents.forEach((event) => {
+      totalMarketsFound += event.markets.length;
+      displayMarketDetails(event);
+    });
 
     console.log(
       "\n═══════════════════════════════════════════════════════════════════",
@@ -275,7 +342,7 @@ async function main() {
       "═══════════════════════════════════════════════════════════════════",
     );
     console.log(`✓ Total Sports Scanned:     ${sports.length}`);
-    console.log(`✓ Total Events Found:       ${totalEventsFound}`);
+    console.log(`✓ Unique Events Found:      ${uniqueEvents.length}`);
     console.log(`✓ Total Markets Found:      ${totalMarketsFound}`);
     console.log(`✓ Time Window:              ${TIME_WINDOW_HOURS} hours`);
     console.log(
