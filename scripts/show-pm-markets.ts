@@ -19,7 +19,7 @@ const EVENT_COLORS = [
 ];
 let eventColorIndex = 0;
 
-interface PolymarketMarket {
+export interface PolymarketMarket {
   id: string;
   question: string | null;
   slug: string | null;
@@ -39,7 +39,7 @@ interface PolymarketMarket {
   clobTokenIds: string | null;
 }
 
-interface PolymarketEvent {
+export interface PolymarketEvent {
   id: string;
   title: string | null;
   slug: string | null;
@@ -226,6 +226,38 @@ async function getEventsForTag(
   }
 }
 
+/**
+ * MAIN EXPORT: Get all Polymarket sports markets (for other scripts to use)
+ * This is what drives the arbitrage bot - only fetch sportsbook odds for these markets
+ */
+export async function getPolymarketSportsMarkets(
+  timeWindowHours: number,
+  minLiquidity: number
+): Promise<PolymarketEvent[]> {
+  const sports = await getSportsMetadata();
+  
+  const seenEventIds = new Set<string>();
+  const uniqueEvents: PolymarketEvent[] = [];
+
+  for (const sport of sports) {
+    const tagIds = sport.tags.split(",").filter((t) => t.trim());
+
+    for (const tagId of tagIds) {
+      const events = await getEventsForTag(tagId.trim(), sport.sport);
+
+      // Deduplicate by event ID
+      events.forEach((event) => {
+        if (!seenEventIds.has(event.id)) {
+          seenEventIds.add(event.id);
+          uniqueEvents.push(event);
+        }
+      });
+    }
+  }
+
+  return uniqueEvents;
+}
+
 function displayMarketDetails(event: PolymarketEvent) {
   const startTime = event.startTime || event.startDate || event.eventDate;
   const timeUntilStart = startTime
@@ -366,7 +398,7 @@ async function main() {
     console.log(`  \x1b[97mSports with Events:\x1b[0m          \x1b[32m${eventsBySport.size}\x1b[0m`);
     console.log(`  \x1b[97mTotal Events Found:\x1b[0m          \x1b[32m${uniqueEvents.length}\x1b[0m`);
     console.log(`  \x1b[97mTotal Markets Found:\x1b[0m         \x1b[32m${totalMarketsFound}\x1b[0m`);
-    console.log(`  \x1b[97mTime Window:\x1b[0m                 Past ${TIME_WINDOW_HOURS} hours`);
+    console.log(`  \x1b[97mTime Window:\x1b[0m                 Next ${TIME_WINDOW_HOURS} hours`);
     console.log(`  \x1b[97mMin Liquidity Filter:\x1b[0m        $${MIN_LIQUIDITY.toLocaleString()}`);
 
     if (eventsBySport.size > 0) {
@@ -410,4 +442,8 @@ async function main() {
   }
 }
 
-main();
+// Only run main if this script is executed directly (not imported)
+// In ES modules, check if this file is the entry point
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

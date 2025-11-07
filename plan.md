@@ -7,7 +7,7 @@ Your Vision:
 
 Sports arbitrage bot that finds +EV opportunities by comparing sportsbook consensus (de-vigged) vs Polymarket prices
 Start with monitoring only (print opportunities, no auto-execution)
-Focus on 12-24 hour window for fast iteration
+Focus on X hour window for fast iteration
 Eventually add Kelly-based position sizing and auto-execution
 Keep copy-trading code intact but separate
 Key Technical Requirements:
@@ -15,7 +15,7 @@ Key Technical Requirements:
 Odds API Integration
 
 Fetch upcoming games (commenceTimeFrom/To filters)
-Pull h2h markets from multiple bookmakers
+Pull markets from multiple bookmakers
 Rate limit: 30 req/sec
 Cost: 1 credit per region per market
 Polymarket Integration
@@ -135,3 +135,14 @@ odds-fetcher.ts
   Update .env with new variables
   Update src/config.ts to load arb settings
   Then you can review before I move to Stage 2. Sound good?
+
+# important notes from my friend:
+- And you want to go by the ask price not the mid price you could instantly fill, or you could leave up bids if you take them down when odds shift ( that might actually be better because people will fill you and you’ll get an extra 1-2%)
+
+- I think offering markets at a larger margin say 8% and taking markets at a lower margin say 3%+ is best if you can do that. Like if the odds the sports book is offering change we need to edit our orders to reflect that
+
+- Yes but the odds might move so we need to constantly be checking the odds to take down our orders if they no longer meet our threshold and adjust them
+
+- So for example on a 1st half moneyline if true odds are 50/50 We’d put orders out at 45 cents on both teams
+
+- KEY: 2 variables looking to increase - our margin per bet and the amount of bets we're able to make - and bet size kinda
