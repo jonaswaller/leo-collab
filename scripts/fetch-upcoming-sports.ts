@@ -1,3 +1,32 @@
+/**
+ * Polymarket Sports Market Fetcher
+ *
+ * Fetches and displays upcoming sports markets from Polymarket within a configurable
+ * time window. This script focuses exclusively on Polymarket
+ * data and provides a foundation for comparing against sportsbook odds.
+ *
+ * Features:
+ * - Fetches sports events and markets from Polymarket Gamma API
+ * - Filters for supported sports (matching Odds API coverage for future comparison)
+ * - Parses team names from event titles
+ * - Classifies market types (h2h, spreads, totals, player_props, other)
+ * - Accurately detects sport using event category and tags
+ * - Filters by minimum liquidity threshold (configurable via MIN_LIQUIDITY)
+ * - Displays results in formatted table with market links
+ * - Implements batched API calls with rate limiting for optimal performance
+ *
+ * Output includes:
+ * - Sport, event title, teams, start time
+ * - Market question and type
+ * - Bid/Ask prices (bestBid = sell price, bestAsk = buy price)
+ * - Liquidity (sum of liquidityNum + liquidityClob from Gamma API)
+ * - Direct links to Polymarket event and market pages
+ * - Summary statistics by sport and market type
+ *
+ * Usage: npm run fetch-sports
+ * Debug mode: DEBUG=true npm run fetch-sports
+ */
+
 import axios from "axios";
 
 // ============================================================================
@@ -40,6 +69,12 @@ interface PolymarketMarket {
   eventStartTime?: string | null;
   closed?: boolean | null;
   active?: boolean | null;
+  // Price data
+  outcomePrices?: string | null; // Stringified JSON array
+  lastTradePrice?: number | null;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+  spread?: number | null;
 }
 
 type MarketType = "h2h" | "spreads" | "totals" | "player_props" | "other";
@@ -53,6 +88,11 @@ interface MarketDisplay {
   marketQuestion: string;
   marketType: MarketType;
   liquidity: number;
+  // Polymarket prices (0-1 probability scale)
+  bestBid?: number;
+  bestAsk?: number;
+  midPrice?: number;
+  lastPrice?: number;
   eventSlug?: string;
   marketSlug?: string;
 }
@@ -63,7 +103,7 @@ interface MarketDisplay {
 
 const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const MIN_LIQUIDITY = 0;
-const HOURS_AHEAD = 22;
+const HOURS_AHEAD = 24;
 const DEBUG = process.env.DEBUG === "true";
 
 // Rate limiting: GAMMA /events allows 100 req/10s
@@ -402,14 +442,14 @@ function detectSportFromEvent(
 }
 
 /**
- * Construct Polymarket URL
+ * Construct Polymarket URL slug (shortened for display)
  */
 function constructUrl(eventSlug?: string, marketSlug?: string): string {
   if (marketSlug) {
-    return `polymarket.com/market/${marketSlug}`;
+    return marketSlug;
   }
   if (eventSlug) {
-    return `polymarket.com/event/${eventSlug}`;
+    return eventSlug;
   }
   return "N/A";
 }
@@ -579,10 +619,33 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
           liquidity,
         };
 
+        // Add optional fields
         if (homeTeam) marketDisplay.homeTeam = homeTeam;
         if (awayTeam) marketDisplay.awayTeam = awayTeam;
         if (event.slug) marketDisplay.eventSlug = event.slug;
         if (market.slug) marketDisplay.marketSlug = market.slug;
+
+        // Add price data
+        if (market.bestBid !== null && market.bestBid !== undefined) {
+          marketDisplay.bestBid = market.bestBid;
+        }
+        if (market.bestAsk !== null && market.bestAsk !== undefined) {
+          marketDisplay.bestAsk = market.bestAsk;
+        }
+        if (
+          market.lastTradePrice !== null &&
+          market.lastTradePrice !== undefined
+        ) {
+          marketDisplay.lastPrice = market.lastTradePrice;
+        }
+        // Calculate midPrice if both bid and ask are available
+        if (
+          marketDisplay.bestBid !== undefined &&
+          marketDisplay.bestAsk !== undefined
+        ) {
+          marketDisplay.midPrice =
+            (marketDisplay.bestBid + marketDisplay.bestAsk) / 2;
+        }
 
         allMarkets.push(marketDisplay);
       }
@@ -664,13 +727,15 @@ function formatTable(markets: MarketDisplay[]): void {
   });
 
   // Column widths
-  const COL_SPORT = 12;
+  const COL_SPORT = 6;
   const COL_EVENT = 30;
   const COL_TIME = 20;
   const COL_MARKET_TYPE = 10;
   const COL_MARKET = 30;
+  const COL_BID = 8;
+  const COL_ASK = 8;
   const COL_LIQUIDITY = 12;
-  const COL_LINK = 30;
+  const COL_LINK = 35;
 
   // Header
   const separator = "━".repeat(
@@ -679,9 +744,11 @@ function formatTable(markets: MarketDisplay[]): void {
       COL_TIME +
       COL_MARKET_TYPE +
       COL_MARKET +
+      COL_BID +
+      COL_ASK +
       COL_LIQUIDITY +
       COL_LINK +
-      18,
+      8, // spaces between columns (9 columns = 8 spaces)
   );
   console.log(
     `\nUpcoming Sports Markets (Next ${HOURS_AHEAD} Hours, Liquidity >= ${formatLiquidity(MIN_LIQUIDITY)})`,
@@ -694,20 +761,29 @@ function formatTable(markets: MarketDisplay[]): void {
     "Start Time".padEnd(COL_TIME),
     "Type".padEnd(COL_MARKET_TYPE),
     "Market".padEnd(COL_MARKET),
+    "Bid".padEnd(COL_BID),
+    "Ask".padEnd(COL_ASK),
     "Liquidity".padEnd(COL_LIQUIDITY),
-    "Link".padEnd(COL_LINK),
+    "Slug".padEnd(COL_LINK),
   ].join(" ");
   console.log(header);
   console.log(separator);
 
   // Rows
   for (const market of markets) {
+    const bidDisplay =
+      market.bestBid !== undefined ? market.bestBid.toFixed(3) : "—";
+    const askDisplay =
+      market.bestAsk !== undefined ? market.bestAsk.toFixed(3) : "—";
+
     const row = [
       truncate(market.sport, COL_SPORT).padEnd(COL_SPORT),
       truncate(market.eventTitle, COL_EVENT).padEnd(COL_EVENT),
       formatDateTime(market.startTime).padEnd(COL_TIME),
       market.marketType.padEnd(COL_MARKET_TYPE),
       truncate(market.marketQuestion, COL_MARKET).padEnd(COL_MARKET),
+      bidDisplay.padEnd(COL_BID),
+      askDisplay.padEnd(COL_ASK),
       formatLiquidity(market.liquidity).padEnd(COL_LIQUIDITY),
       truncate(constructUrl(market.eventSlug, market.marketSlug), COL_LINK),
     ].join(" ");
