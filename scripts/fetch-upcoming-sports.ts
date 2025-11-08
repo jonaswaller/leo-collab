@@ -1,0 +1,489 @@
+import axios from "axios";
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+interface SportMetadata {
+  sport: string;
+  image?: string;
+  resolution?: string;
+  ordering?: string;
+  tags: string; // comma-separated tag IDs
+  series?: string;
+}
+
+interface PolymarketEvent {
+  id: string;
+  title: string | null;
+  slug: string | null;
+  startDate?: string | null;
+  startTime?: string | null;
+  eventDate?: string | null;
+  endDate?: string | null;
+  closed?: boolean | null;
+  active?: boolean | null;
+  markets?: PolymarketMarket[];
+}
+
+interface PolymarketMarket {
+  id: string;
+  question: string | null;
+  slug?: string | null;
+  liquidityNum?: number | null;
+  liquidityClob?: number | null;
+  liquidityAmm?: number | null;
+  liquidity?: string | null;
+  gameStartTime?: string | null;
+  eventStartTime?: string | null;
+  closed?: boolean | null;
+  active?: boolean | null;
+}
+
+interface MarketDisplay {
+  sport: string;
+  eventTitle: string;
+  startTime: Date;
+  marketQuestion: string;
+  liquidity: number;
+  eventSlug?: string;
+  marketSlug?: string;
+}
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
+const MIN_LIQUIDITY = 1000;
+const HOURS_AHEAD = 12;
+const DEBUG = process.env.DEBUG === "true";
+
+// Rate limiting: GAMMA /events allows 100 req/10s
+// We'll batch at 80 req/10s to be safe (8 concurrent requests per second)
+const BATCH_SIZE = 80;
+const BATCH_DELAY_MS = 10000; // 10 seconds
+
+// Create axios instance for Gamma API
+const axGamma = axios.create({
+  baseURL: GAMMA_API_BASE,
+  timeout: 10000,
+});
+
+// ============================================================================
+// API FUNCTIONS
+// ============================================================================
+
+/**
+ * Fetch all sports metadata from Gamma API
+ * Returns sports with their associated tag IDs for filtering
+ */
+async function getSportsMetadata(): Promise<SportMetadata[]> {
+  try {
+    const { data } = await axGamma.get<SportMetadata[]>("/sports");
+    console.log(`✓ Fetched ${data.length} sports from Polymarket`);
+    return data;
+  } catch (error: any) {
+    console.error("Error fetching sports metadata:", error.message);
+    throw error;
+  }
+}
+
+/**
+ * Fetch events for a specific sport within the time window
+ * NOTE: API date filtering seems unreliable, so we fetch all active events
+ * and filter client-side for better accuracy
+ */
+async function fetchEventsForSport(
+  tagId: string,
+  startMin: string,
+  startMax: string,
+): Promise<PolymarketEvent[]> {
+  try {
+    // Fetch all active events for this tag
+    // We'll filter by time client-side since API filtering is unreliable
+    const { data } = await axGamma.get<PolymarketEvent[]>("/events", {
+      params: {
+        tag_id: tagId,
+        closed: false,
+        limit: 100,
+        // NOTE: Removing start_date filters - they don't seem to work reliably
+        // We'll validate dates client-side instead
+      },
+    });
+    return data || [];
+  } catch (error: any) {
+    // Silently handle errors for individual sports (some may have no events)
+    if (error.response?.status !== 404) {
+      console.warn(`Warning: Error fetching events for tag ${tagId}`);
+    }
+    return [];
+  }
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Calculate liquidity from market data
+ * Tries multiple fields and formats
+ */
+function calculateLiquidity(market: PolymarketMarket): number {
+  // Try liquidityNum first (most reliable)
+  if (typeof market.liquidityNum === "number" && market.liquidityNum > 0) {
+    return market.liquidityNum;
+  }
+
+  // Try summing CLOB + AMM
+  const clobLiq = market.liquidityClob || 0;
+  const ammLiq = market.liquidityAmm || 0;
+  if (clobLiq + ammLiq > 0) {
+    return clobLiq + ammLiq;
+  }
+
+  // Try parsing liquidity string
+  if (market.liquidity) {
+    const parsed = parseFloat(market.liquidity);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Extract start time from event or market
+ * Tries multiple date fields in priority order
+ */
+function extractStartTime(
+  event: PolymarketEvent,
+  market?: PolymarketMarket,
+): Date | null {
+  // Priority 1: event.startTime (primary for sports)
+  if (event.startTime) {
+    const date = new Date(event.startTime);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Priority 2: market.gameStartTime
+  if (market?.gameStartTime) {
+    const date = new Date(market.gameStartTime);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Priority 3: market.eventStartTime
+  if (market?.eventStartTime) {
+    const date = new Date(market.eventStartTime);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Priority 4: event.eventDate
+  if (event.eventDate) {
+    const date = new Date(event.eventDate);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Priority 5: event.startDate (fallback)
+  if (event.startDate) {
+    const date = new Date(event.startDate);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  return null;
+}
+
+/**
+ * Validate that a start time is within the desired window
+ */
+function isWithinTimeWindow(
+  startTime: Date,
+  windowStart: Date,
+  windowEnd: Date,
+): boolean {
+  return startTime >= windowStart && startTime <= windowEnd;
+}
+
+/**
+ * Format date for display
+ */
+function formatDateTime(date: Date): string {
+  const options: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  };
+  return date.toLocaleString("en-US", options);
+}
+
+/**
+ * Format liquidity as currency
+ */
+function formatLiquidity(amount: number): string {
+  return `$${amount.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+}
+
+/**
+ * Truncate text to fit in column
+ */
+function truncate(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return text.substring(0, maxLength - 3) + "...";
+}
+
+/**
+ * Construct Polymarket URL
+ */
+function constructUrl(eventSlug?: string, marketSlug?: string): string {
+  if (marketSlug) {
+    return `polymarket.com/market/${marketSlug}`;
+  }
+  if (eventSlug) {
+    return `polymarket.com/event/${eventSlug}`;
+  }
+  return "N/A";
+}
+
+// ============================================================================
+// MAIN LOGIC
+// ============================================================================
+
+/**
+ * Process a batch of tag requests in parallel
+ */
+async function processBatch(
+  batch: Array<{ sport: SportMetadata; tagId: string }>,
+  startMin: string,
+  startMax: string,
+): Promise<Array<{ sport: SportMetadata; events: PolymarketEvent[] }>> {
+  const promises = batch.map(async ({ sport, tagId }) => {
+    const events = await fetchEventsForSport(tagId, startMin, startMax);
+    return { sport, tagId, events };
+  });
+
+  const results = await Promise.allSettled(promises);
+
+  return results
+    .filter((r) => r.status === "fulfilled")
+    .map((r) => (r as PromiseFulfilledResult<{ sport: SportMetadata; tagId: string; events: PolymarketEvent[] }>).value)
+    .filter((r) => r.events.length > 0);
+}
+
+/**
+ * Sleep utility for rate limiting
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch all upcoming sports markets within the time window
+ */
+async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
+  const now = new Date();
+  const windowEnd = new Date(now.getTime() + HOURS_AHEAD * 60 * 60 * 1000);
+
+  const startMin = now.toISOString();
+  const startMax = windowEnd.toISOString();
+
+  console.log(`\n🔍 Searching for sports markets...`);
+  console.log(`   Time window: ${formatDateTime(now)} to ${formatDateTime(windowEnd)}`);
+  console.log(`   Min liquidity: ${formatLiquidity(MIN_LIQUIDITY)}\n`);
+
+  // Step 1: Get all sports metadata
+  const sports = await getSportsMetadata();
+
+  // Step 2: Build list of all (sport, tagId) pairs
+  const requests: Array<{ sport: SportMetadata; tagId: string }> = [];
+  for (const sport of sports) {
+    const tagIds = sport.tags.split(",").map((t) => t.trim()).filter(Boolean);
+    for (const tagId of tagIds) {
+      requests.push({ sport, tagId });
+    }
+  }
+
+  console.log(`📡 Fetching data for ${requests.length} tags across ${sports.length} sports...`);
+  console.log(`   (Processing in batches of ${BATCH_SIZE} to respect rate limits)\n`);
+
+  // Step 3: Process requests in batches to respect rate limits
+  const allResults: Array<{ sport: SportMetadata; events: PolymarketEvent[] }> = [];
+  const startTime = Date.now();
+
+  for (let i = 0; i < requests.length; i += BATCH_SIZE) {
+    const batch = requests.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(requests.length / BATCH_SIZE);
+
+    console.log(`⚡ Processing batch ${batchNum}/${totalBatches} (${batch.length} requests)...`);
+
+    const batchResults = await processBatch(batch, startMin, startMax);
+    allResults.push(...batchResults);
+
+    // Rate limiting: wait before next batch (except on last batch)
+    if (i + BATCH_SIZE < requests.length) {
+      await sleep(BATCH_DELAY_MS);
+    }
+  }
+
+  const fetchDuration = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`\n✅ Data fetched in ${fetchDuration}s\n`);
+
+  // Step 4: Extract and filter markets from events
+  const allMarkets: MarketDisplay[] = [];
+  let totalEvents = 0;
+  let totalMarketsScanned = 0;
+  let marketsFilteredByLiquidity = 0;
+
+  for (const { sport, events } of allResults) {
+    if (events.length > 0) {
+      console.log(`  • ${sport.sport}: ${events.length} events`);
+      totalEvents += events.length;
+    }
+
+    for (const event of events) {
+      if (!event.markets || event.markets.length === 0) continue;
+
+      const eventStartTime = extractStartTime(event, undefined);
+
+      // Skip events with no valid start time or outside time window
+      if (!eventStartTime || !isWithinTimeWindow(eventStartTime, now, windowEnd)) {
+        continue;
+      }
+
+      for (const market of event.markets) {
+        totalMarketsScanned++;
+
+        // Skip closed/inactive markets
+        if (market.closed || market.active === false) continue;
+
+        // Calculate liquidity
+        const liquidity = calculateLiquidity(market);
+
+        // Filter by minimum liquidity
+        if (liquidity < MIN_LIQUIDITY) {
+          marketsFilteredByLiquidity++;
+          continue;
+        }
+
+        // Get start time (prefer market-specific, fall back to event)
+        const startTime = extractStartTime(event, market) || eventStartTime;
+
+        const marketDisplay: MarketDisplay = {
+          sport: sport.sport,
+          eventTitle: event.title || "Unknown Event",
+          startTime,
+          marketQuestion: market.question || "Unknown Market",
+          liquidity,
+        };
+
+        if (event.slug) marketDisplay.eventSlug = event.slug;
+        if (market.slug) marketDisplay.marketSlug = market.slug;
+
+        allMarkets.push(marketDisplay);
+      }
+    }
+  }
+
+  // Deduplicate markets by unique key (market slug or event title + market question)
+  const seen = new Set<string>();
+  const uniqueMarkets = allMarkets.filter((market) => {
+    const key = market.marketSlug
+      ? `market:${market.marketSlug}`
+      : `${market.eventSlug || market.eventTitle}:${market.marketQuestion}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  console.log(`\n📊 Scan complete:`);
+  console.log(`   • Events found: ${totalEvents}`);
+  console.log(`   • Markets scanned: ${totalMarketsScanned}`);
+  console.log(`   • Filtered by liquidity (<$${MIN_LIQUIDITY}): ${marketsFilteredByLiquidity}`);
+  console.log(`   • Markets matching criteria (before dedup): ${allMarkets.length}`);
+  console.log(`   • Unique markets: ${uniqueMarkets.length}\n`);
+
+  return uniqueMarkets;
+}
+
+/**
+ * Display markets in a formatted table
+ */
+function formatTable(markets: MarketDisplay[]): void {
+  if (markets.length === 0) {
+    console.log("No markets found matching the criteria.\n");
+    return;
+  }
+
+  // Sort by start time, then by sport
+  markets.sort((a, b) => {
+    const timeDiff = a.startTime.getTime() - b.startTime.getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return a.sport.localeCompare(b.sport);
+  });
+
+  // Column widths
+  const COL_SPORT = 12;
+  const COL_EVENT = 30;
+  const COL_TIME = 20;
+  const COL_MARKET = 35;
+  const COL_LIQUIDITY = 12;
+  const COL_LINK = 35;
+
+  // Header
+  const separator = "━".repeat(COL_SPORT + COL_EVENT + COL_TIME + COL_MARKET + COL_LIQUIDITY + COL_LINK + 15);
+  console.log(`\nUpcoming Sports Markets (Next ${HOURS_AHEAD} Hours, Liquidity >= ${formatLiquidity(MIN_LIQUIDITY)})`);
+  console.log(separator);
+
+  const header = [
+    "Sport".padEnd(COL_SPORT),
+    "Teams/Event".padEnd(COL_EVENT),
+    "Start Time".padEnd(COL_TIME),
+    "Market Type".padEnd(COL_MARKET),
+    "Liquidity".padEnd(COL_LIQUIDITY),
+    "Link".padEnd(COL_LINK),
+  ].join(" ");
+  console.log(header);
+  console.log(separator);
+
+  // Rows
+  for (const market of markets) {
+    const row = [
+      truncate(market.sport, COL_SPORT).padEnd(COL_SPORT),
+      truncate(market.eventTitle, COL_EVENT).padEnd(COL_EVENT),
+      formatDateTime(market.startTime).padEnd(COL_TIME),
+      truncate(market.marketQuestion, COL_MARKET).padEnd(COL_MARKET),
+      formatLiquidity(market.liquidity).padEnd(COL_LIQUIDITY),
+      truncate(constructUrl(market.eventSlug, market.marketSlug), COL_LINK),
+    ].join(" ");
+    console.log(row);
+  }
+
+  console.log(separator);
+
+  // Summary
+  const uniqueEvents = new Set(markets.map((m) => m.eventTitle)).size;
+  console.log(`Total: ${markets.length} markets across ${uniqueEvents} events\n`);
+}
+
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
+
+async function main() {
+  try {
+    const markets = await getAllUpcomingSportsMarkets();
+    formatTable(markets);
+  } catch (error: any) {
+    console.error("\n❌ Error:", error.message);
+    process.exit(1);
+  }
+}
+
+// Run the main function
+main();
+
