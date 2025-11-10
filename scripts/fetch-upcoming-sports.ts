@@ -2,26 +2,37 @@
  * Polymarket Sports Market Fetcher
  *
  * Fetches and displays upcoming sports markets from Polymarket within a configurable
- * time window. This script focuses exclusively on Polymarket
- * data and provides a foundation for comparing against sportsbook odds.
+ * time window. Designed for sports arbitrage by providing clean, tradeable market data
+ * that can be compared against sportsbook odds.
  *
  * Features:
  * - Fetches sports events and markets from Polymarket Gamma API
- * - Filters for supported sports (matching Odds API coverage for future comparison)
+ * - Filters for supported sports (matching Odds API coverage)
  * - Parses team names from event titles
  * - Classifies market types (h2h, spreads, totals, player_props, other)
  * - Accurately detects sport using event category and tags
  * - Filters by minimum liquidity threshold (configurable via MIN_LIQUIDITY)
- * - Displays results in formatted table with market links
+ * - **Filters out phantom markets** (markets in API but not tradeable on platform)
+ * - Displays both sides of each market with bid/ask prices
  * - Implements batched API calls with rate limiting for optimal performance
+ * - Provides direct Polymarket URLs for each market
  *
  * Output includes:
  * - Sport, event title, teams, start time
- * - Market question and type
- * - Bid/Ask prices (bestBid = sell price, bestAsk = buy price)
+ * - Market question and type classification
+ * - **Both outcomes** with bid/ask prices for each side
+ *   - Outcome 1: Primary outcome (e.g., Team A, Over, Yes)
+ *   - Outcome 2: Complement outcome (e.g., Team B, Under, No)
+ * - Bid/Ask prices (bestBid = highest buy offer, bestAsk = lowest sell offer)
  * - Liquidity (sum of liquidityNum + liquidityClob from Gamma API)
  * - Direct links to Polymarket event and market pages
  * - Summary statistics by sport and market type
+ *
+ * Phantom Market Detection:
+ * - Filters markets with spreads > 90% (e.g., 0.01/0.99)
+ * - Filters markets with $0 liquidity AND spreads > 50%
+ * - Filters markets with bid < 2% AND ask > 98%
+ * - Ensures only real, tradeable markets are displayed
  *
  * Usage: npm run fetch-sports
  * Debug mode: DEBUG=true npm run fetch-sports
@@ -70,6 +81,7 @@ interface PolymarketMarket {
   closed?: boolean | null;
   active?: boolean | null;
   // Price data
+  outcomes?: string | null; // Stringified JSON array ["Team A", "Team B"]
   outcomePrices?: string | null; // Stringified JSON array
   lastTradePrice?: number | null;
   bestBid?: number | null;
@@ -89,10 +101,15 @@ interface MarketDisplay {
   marketType: MarketType;
   liquidity: number;
   // Polymarket prices (0-1 probability scale)
-  bestBid?: number;
-  bestAsk?: number;
-  midPrice?: number;
+  // Outcome 1 (primary - e.g., Team A, Yes, Over)
+  outcome1Name?: string;
+  bestBid?: number; // Outcome 1 bid
+  bestAsk?: number; // Outcome 1 ask
   lastPrice?: number;
+  // Outcome 2 (complement - e.g., Team B, No, Under)
+  outcome2Name?: string;
+  outcome2Bid?: number; // = 1 - bestAsk
+  outcome2Ask?: number; // = 1 - bestBid
   eventSlug?: string;
   marketSlug?: string;
 }
@@ -103,7 +120,7 @@ interface MarketDisplay {
 
 const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const MIN_LIQUIDITY = 0;
-const HOURS_AHEAD = 24;
+const HOURS_AHEAD = 6;
 const DEBUG = process.env.DEBUG === "true";
 
 // Rate limiting: GAMMA /events allows 100 req/10s
@@ -602,6 +619,30 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
           continue;
         }
 
+        // CRITICAL: Filter out phantom markets (markets that appear in API but don't exist)
+        // Phantom markets have extreme spreads like 0.01/0.99 (1%/99%)
+        const hasBidAsk =
+          market.bestBid !== null &&
+          market.bestBid !== undefined &&
+          market.bestAsk !== null &&
+          market.bestAsk !== undefined;
+
+        if (hasBidAsk) {
+          const spread = market.bestAsk! - market.bestBid!;
+
+          // If spread > 90% OR (liquidity is $0 AND spread > 50%), it's a phantom market
+          if (spread > 0.9 || (liquidity === 0 && spread > 0.5)) {
+            marketsFilteredByLiquidity++; // Count as filtered
+            continue;
+          }
+
+          // Also filter if bid < 2% AND ask > 98% (essentially untradeable)
+          if (market.bestBid! < 0.02 && market.bestAsk! > 0.98) {
+            marketsFilteredByLiquidity++;
+            continue;
+          }
+        }
+
         // Get start time (prefer market-specific, fall back to event)
         const startTime = extractStartTime(event, market) || eventStartTime;
 
@@ -625,7 +666,24 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
         if (event.slug) marketDisplay.eventSlug = event.slug;
         if (market.slug) marketDisplay.marketSlug = market.slug;
 
-        // Add price data
+        // Parse outcome names for binary markets
+        let outcomes: string[] = [];
+        try {
+          if (market.outcomes) {
+            outcomes = JSON.parse(market.outcomes);
+          }
+        } catch {
+          // Default outcome names if parsing fails
+          outcomes = ["Yes", "No"];
+        }
+
+        // Add outcome names
+        if (outcomes.length >= 2) {
+          if (outcomes[0]) marketDisplay.outcome1Name = outcomes[0];
+          if (outcomes[1]) marketDisplay.outcome2Name = outcomes[1];
+        }
+
+        // Add price data for Outcome 1 (primary)
         if (market.bestBid !== null && market.bestBid !== undefined) {
           marketDisplay.bestBid = market.bestBid;
         }
@@ -638,13 +696,17 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
         ) {
           marketDisplay.lastPrice = market.lastTradePrice;
         }
-        // Calculate midPrice if both bid and ask are available
+
+        // Calculate complement prices (Outcome 2)
         if (
           marketDisplay.bestBid !== undefined &&
           marketDisplay.bestAsk !== undefined
         ) {
-          marketDisplay.midPrice =
-            (marketDisplay.bestBid + marketDisplay.bestAsk) / 2;
+          // Outcome 2 prices (complement)
+          // Team B bid = 1 - Team A ask (per mentor's advice)
+          marketDisplay.outcome2Bid = 1 - marketDisplay.bestAsk;
+          // Team B ask = 1 - Team A bid (per mentor's advice)
+          marketDisplay.outcome2Ask = 1 - marketDisplay.bestBid;
         }
 
         allMarkets.push(marketDisplay);
@@ -730,24 +792,24 @@ function formatTable(markets: MarketDisplay[]): void {
   const COL_SPORT = 6;
   const COL_EVENT = 30;
   const COL_TIME = 20;
+  const COL_MARKET = 35;
   const COL_MARKET_TYPE = 10;
-  const COL_MARKET = 30;
+  const COL_OUTCOME = 25;
   const COL_BID = 8;
   const COL_ASK = 8;
   const COL_LIQUIDITY = 12;
-  const COL_LINK = 35;
 
   // Header
   const separator = "━".repeat(
     COL_SPORT +
       COL_EVENT +
       COL_TIME +
-      COL_MARKET_TYPE +
       COL_MARKET +
+      COL_MARKET_TYPE +
+      COL_OUTCOME +
       COL_BID +
       COL_ASK +
       COL_LIQUIDITY +
-      COL_LINK +
       8, // spaces between columns (9 columns = 8 spaces)
   );
   console.log(
@@ -759,35 +821,65 @@ function formatTable(markets: MarketDisplay[]): void {
     "Sport".padEnd(COL_SPORT),
     "Teams/Event".padEnd(COL_EVENT),
     "Start Time".padEnd(COL_TIME),
-    "Type".padEnd(COL_MARKET_TYPE),
     "Market".padEnd(COL_MARKET),
+    "Type".padEnd(COL_MARKET_TYPE),
+    "Outcome".padEnd(COL_OUTCOME),
     "Bid".padEnd(COL_BID),
     "Ask".padEnd(COL_ASK),
     "Liquidity".padEnd(COL_LIQUIDITY),
-    "Slug".padEnd(COL_LINK),
   ].join(" ");
   console.log(header);
   console.log(separator);
 
-  // Rows
+  // Rows - show both outcomes for each market
   for (const market of markets) {
-    const bidDisplay =
-      market.bestBid !== undefined ? market.bestBid.toFixed(3) : "—";
-    const askDisplay =
-      market.bestAsk !== undefined ? market.bestAsk.toFixed(3) : "—";
+    // Outcome 1 row
+    const bid1 = market.bestBid !== undefined ? market.bestBid.toFixed(3) : "—";
+    const ask1 = market.bestAsk !== undefined ? market.bestAsk.toFixed(3) : "—";
+    const outcome1 = market.outcome1Name || "Outcome 1";
 
-    const row = [
+    const row1 = [
       truncate(market.sport, COL_SPORT).padEnd(COL_SPORT),
       truncate(market.eventTitle, COL_EVENT).padEnd(COL_EVENT),
       formatDateTime(market.startTime).padEnd(COL_TIME),
-      market.marketType.padEnd(COL_MARKET_TYPE),
       truncate(market.marketQuestion, COL_MARKET).padEnd(COL_MARKET),
-      bidDisplay.padEnd(COL_BID),
-      askDisplay.padEnd(COL_ASK),
+      market.marketType.padEnd(COL_MARKET_TYPE),
+      truncate(outcome1, COL_OUTCOME).padEnd(COL_OUTCOME),
+      bid1.padEnd(COL_BID),
+      ask1.padEnd(COL_ASK),
       formatLiquidity(market.liquidity).padEnd(COL_LIQUIDITY),
-      truncate(constructUrl(market.eventSlug, market.marketSlug), COL_LINK),
     ].join(" ");
-    console.log(row);
+    console.log(row1);
+
+    // Outcome 2 row (if available)
+    if (market.outcome2Bid !== undefined && market.outcome2Ask !== undefined) {
+      const bid2 = market.outcome2Bid.toFixed(3);
+      const ask2 = market.outcome2Ask.toFixed(3);
+      const outcome2 = market.outcome2Name || "Outcome 2";
+
+      const row2 = [
+        "".padEnd(COL_SPORT), // Empty sport column
+        "".padEnd(COL_EVENT), // Empty event column
+        "".padEnd(COL_TIME), // Empty time column
+        "".padEnd(COL_MARKET), // Empty market column
+        "".padEnd(COL_MARKET_TYPE), // Empty type column
+        truncate(outcome2, COL_OUTCOME).padEnd(COL_OUTCOME),
+        bid2.padEnd(COL_BID),
+        ask2.padEnd(COL_ASK),
+        "".padEnd(COL_LIQUIDITY), // Empty liquidity column
+      ].join(" ");
+      console.log(row2);
+    }
+
+    // Add market URL if available
+    // if (market.marketSlug) {
+    //   console.log(`   🔗 https://polymarket.com/event/${market.marketSlug}`);
+    // } else if (market.eventSlug) {
+    //   console.log(`   🔗 https://polymarket.com/event/${market.eventSlug}`);
+    // }
+
+    // Add a subtle separator between markets
+    console.log("─".repeat(separator.length));
   }
 
   console.log(separator);
