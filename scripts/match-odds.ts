@@ -102,6 +102,12 @@ interface MatchedMarket {
     };
   };
   skipReason?: string;
+  ev?: {
+    outcome1EV: number | null;
+    outcome2EV: number | null;
+    bestEV: number | null;
+    bestOutcome: string | null;
+  };
 }
 
 // ============================================================================
@@ -343,6 +349,27 @@ function calculateWeightedConsensus(
   };
 }
 
+/**
+ * Calculate Expected Value (EV) for betting on Polymarket
+ *
+ * EV = (Fair Probability - Polymarket Ask Price) / Fair Probability
+ *
+ * Positive EV means the market is mispriced in your favor - the consensus
+ * "fair" probability is higher than what you'd pay on Polymarket.
+ *
+ * Example:
+ * - Fair probability: 55% (from weighted consensus of sharp books)
+ * - Polymarket ask: 52% (what you pay to buy this outcome)
+ * - EV = (0.55 - 0.52) / 0.55 = 5.45% edge
+ */
+function calculateEV(
+  fairProbability: number,
+  polymarketAsk: number,
+): number | null {
+  if (fairProbability <= 0) return null;
+  return (fairProbability - polymarketAsk) / fairProbability;
+}
+
 // ============================================================================
 // MATCHING LOGIC
 // ============================================================================
@@ -537,6 +564,112 @@ function matchMarket(
   return result;
 }
 
+/**
+ * Calculate EV for a matched market by comparing consensus fair odds
+ * against Polymarket ask prices
+ */
+function calculateMarketEV(match: MatchedMarket): void {
+  const pm = match.polymarket;
+  const bookmakers = Object.keys(match.sportsbooks);
+
+  if (bookmakers.length === 0) return;
+
+  // Extract bookmaker odds for consensus calculation
+  const pmLine = extractLine(pm.marketQuestion, pm.marketType);
+  const bookmakerOdds: Array<{
+    bookmaker: string;
+    outcome1Price: number;
+    outcome2Price: number;
+  }> = [];
+
+  for (const bookKey of bookmakers) {
+    const bookData = match.sportsbooks[bookKey];
+    if (!bookData) continue;
+    const { market } = bookData;
+
+    let outcome1Price: number | null = null;
+    let outcome2Price: number | null = null;
+
+    for (const outcome of market.outcomes) {
+      if (pm.marketType === "spreads") {
+        if (pmLine !== null && outcome.point !== undefined) {
+          if (Math.abs(outcome.point - pmLine) < 0.01) {
+            outcome1Price = outcome.price;
+          } else if (Math.abs(outcome.point + pmLine) < 0.01) {
+            outcome2Price = outcome.price;
+          }
+        }
+      } else if (pm.marketType === "totals") {
+        if (pmLine !== null && outcome.point !== undefined) {
+          if (Math.abs(outcome.point - pmLine) < 0.01) {
+            if (outcome1Price === null) {
+              outcome1Price = outcome.price;
+            } else {
+              outcome2Price = outcome.price;
+            }
+          }
+        }
+      } else {
+        if (outcome1Price === null) {
+          outcome1Price = outcome.price;
+        } else {
+          outcome2Price = outcome.price;
+        }
+      }
+    }
+
+    if (outcome1Price !== null && outcome2Price !== null) {
+      bookmakerOdds.push({
+        bookmaker: bookKey,
+        outcome1Price,
+        outcome2Price,
+      });
+    }
+  }
+
+  const consensus = calculateWeightedConsensus(bookmakerOdds);
+  if (!consensus) return;
+
+  // Calculate EV for each outcome
+  let outcome1EV: number | null = null;
+  let outcome2EV: number | null = null;
+
+  if (pm.bestAsk !== undefined) {
+    outcome1EV = calculateEV(consensus.consensus1, pm.bestAsk);
+  }
+
+  if (pm.outcome2Ask !== undefined) {
+    outcome2EV = calculateEV(consensus.consensus2, pm.outcome2Ask);
+  }
+
+  // Determine best EV
+  let bestEV: number | null = null;
+  let bestOutcome: string | null = null;
+
+  if (outcome1EV !== null && outcome2EV !== null) {
+    if (outcome1EV > outcome2EV) {
+      bestEV = outcome1EV;
+      bestOutcome = pm.outcome1Name || "Outcome 1";
+    } else {
+      bestEV = outcome2EV;
+      bestOutcome = pm.outcome2Name || "Outcome 2";
+    }
+  } else if (outcome1EV !== null) {
+    bestEV = outcome1EV;
+    bestOutcome = pm.outcome1Name || "Outcome 1";
+  } else if (outcome2EV !== null) {
+    bestEV = outcome2EV;
+    bestOutcome = pm.outcome2Name || "Outcome 2";
+  }
+
+  match.ev = {
+    outcome1EV,
+    outcome2EV,
+    bestEV,
+    bestOutcome,
+  };
+}
+
 // ============================================================================
 // DISPLAY
 // ============================================================================
@@ -547,8 +680,17 @@ function displayMatches(matches: MatchedMarket[]) {
     (m) => Object.keys(m.sportsbooks).length === 0,
   );
 
+  // Sort matched markets by best EV (lowest first, so best appears at bottom)
+  matched.sort((a, b) => {
+    const aEV = a.ev?.bestEV ?? -Infinity;
+    const bEV = b.ev?.bestEV ?? -Infinity;
+    return aEV - bEV;
+  });
+
   console.log(`\n${"=".repeat(120)}`);
-  console.log(`MATCHED MARKETS: ${matched.length}`);
+  console.log(
+    `MATCHED MARKETS: ${matched.length} (sorted by EV - best at bottom)`,
+  );
   console.log(`${"=".repeat(120)}\n`);
 
   for (const match of matched) {
@@ -667,6 +809,58 @@ function displayMatches(matches: MatchedMarket[]) {
       console.log(`│`.padEnd(120) + "│");
     }
 
+    // Display EV
+    if (match.ev) {
+      console.log(`│ EXPECTED VALUE (EV):`.padEnd(120) + "│");
+
+      if (match.ev.outcome1EV !== null) {
+        const ev1Pct = (match.ev.outcome1EV * 100).toFixed(2);
+        const ev1Sign = match.ev.outcome1EV >= 0 ? "+" : "";
+        const ev1Color =
+          match.ev.outcome1EV > 0
+            ? "🟢"
+            : match.ev.outcome1EV < -0.05
+              ? "🔴"
+              : "🟡";
+        console.log(
+          `│   ${(pm.outcome1Name || "Outcome 1").padEnd(30)} ${ev1Color} ${ev1Sign}${ev1Pct}%`.padEnd(
+            120,
+          ) + "│",
+        );
+      }
+
+      if (match.ev.outcome2EV !== null) {
+        const ev2Pct = (match.ev.outcome2EV * 100).toFixed(2);
+        const ev2Sign = match.ev.outcome2EV >= 0 ? "+" : "";
+        const ev2Color =
+          match.ev.outcome2EV > 0
+            ? "🟢"
+            : match.ev.outcome2EV < -0.05
+              ? "🔴"
+              : "🟡";
+        console.log(
+          `│   ${(pm.outcome2Name || "Outcome 2").padEnd(30)} ${ev2Color} ${ev2Sign}${ev2Pct}%`.padEnd(
+            120,
+          ) + "│",
+        );
+      }
+
+      if (match.ev.bestEV !== null && match.ev.bestOutcome) {
+        console.log(`│`.padEnd(120) + "│");
+        const bestEvPct = (match.ev.bestEV * 100).toFixed(2);
+        const bestEvSign = match.ev.bestEV >= 0 ? "+" : "";
+        const bestEvEmoji =
+          match.ev.bestEV > 0.05 ? "🎯" : match.ev.bestEV > 0 ? "✅" : "⚠️";
+        console.log(
+          `│   ${bestEvEmoji} BEST: ${match.ev.bestOutcome} at ${bestEvSign}${bestEvPct}% EV`.padEnd(
+            120,
+          ) + "│",
+        );
+      }
+
+      console.log(`│`.padEnd(120) + "│");
+    }
+
     console.log(`│ SPORTSBOOKS (${bookmakers.length}):`.padEnd(120) + "│");
 
     // For spreads, extract which team is favored from the Polymarket question
@@ -745,7 +939,33 @@ function displayMatches(matches: MatchedMarket[]) {
   console.log(`\n📊 Summary:`);
   console.log(`   • Matched: ${matched.length}`);
   console.log(`   • Skipped: ${skipped.length}`);
-  console.log(`   • Total: ${matches.length}\n`);
+  console.log(`   • Total: ${matches.length}`);
+
+  // EV breakdown
+  const positiveEV = matched.filter(
+    (m) => m.ev && m.ev.bestEV && m.ev.bestEV > 0,
+  );
+  const strongPositiveEV = matched.filter(
+    (m) => m.ev && m.ev.bestEV && m.ev.bestEV > 0.05,
+  );
+
+  if (matched.length > 0) {
+    console.log(`\n💰 EV Breakdown:`);
+    console.log(`   • Positive EV opportunities: ${positiveEV.length}`);
+    console.log(`   • Strong +EV (>5%): ${strongPositiveEV.length}`);
+
+    if (strongPositiveEV.length > 0) {
+      console.log(`\n🎯 Top Opportunities:`);
+      strongPositiveEV.slice(0, 5).forEach((m, i) => {
+        const evPct = ((m.ev?.bestEV ?? 0) * 100).toFixed(2);
+        console.log(`   ${i + 1}. ${m.polymarket.eventTitle}`);
+        console.log(`      ${m.polymarket.marketQuestion}`);
+        console.log(`      ${m.ev?.bestOutcome}: +${evPct}% EV`);
+      });
+    }
+  }
+
+  console.log("");
 }
 
 // ============================================================================
@@ -867,6 +1087,14 @@ async function main() {
     for (const market of markets) {
       const match = matchMarket(market, oddsEvents);
       allMatches.push(match);
+    }
+  }
+
+  // Calculate EV for all matched markets
+  console.log("📈 Calculating Expected Value (EV)...\n");
+  for (const match of allMatches) {
+    if (Object.keys(match.sportsbooks).length > 0) {
+      calculateMarketEV(match);
     }
   }
 
