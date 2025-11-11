@@ -28,11 +28,8 @@
  * - Direct links to Polymarket event and market pages
  * - Summary statistics by sport and market type
  *
- * Phantom Market Detection: [CHANGE TO - REMOVE MARKETS WHERE NOTHING AT ALL IN ORDER BOOK]
- * - Filters markets with spreads > 90% (e.g., 0.01/0.99)
- * - Filters markets with $0 liquidity AND spreads > 50%
- * - Filters markets with bid < 2% AND ask > 98%
- * - Ensures only real, tradeable markets are displayed
+ * Phantom Markets: 
+ * - We're only trying to remove markets with no order history
  *
  * Usage: npm run fetch-sports
  * Debug mode: DEBUG=true npm run fetch-sports
@@ -120,7 +117,7 @@ interface MarketDisplay {
 
 const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const MIN_LIQUIDITY = 0;
-const HOURS_AHEAD = 6;
+const HOURS_AHEAD = 24;
 const DEBUG = process.env.DEBUG === "true";
 
 // Rate limiting: GAMMA /events allows 100 req/10s
@@ -515,7 +512,10 @@ function sleep(ms: number): Promise<void> {
 /**
  * Fetch all upcoming sports markets within the time window
  */
-async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
+async function getAllUpcomingSportsMarkets(): Promise<{
+  markets: MarketDisplay[];
+  emptyOrderBookCount: number;
+}> {
   const now = new Date();
   const windowEnd = new Date(now.getTime() + HOURS_AHEAD * 60 * 60 * 1000);
 
@@ -581,6 +581,7 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
   let totalEvents = 0;
   let totalMarketsScanned = 0;
   let marketsFilteredByLiquidity = 0;
+  let marketsFilteredByEmptyOrderBook = 0;
 
   for (const { sport, events } of allResults) {
     if (events.length > 0) {
@@ -609,6 +610,21 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
 
         // Skip closed/inactive markets
         if (market.closed || market.active === false) continue;
+
+        // Skip markets with no orders in the order book at all
+        const hasBid =
+          market.bestBid !== null &&
+          market.bestBid !== undefined &&
+          market.bestBid !== 0;
+        const hasAsk =
+          market.bestAsk !== null &&
+          market.bestAsk !== undefined &&
+          market.bestAsk !== 0;
+
+        if (!hasBid && !hasAsk) {
+          marketsFilteredByEmptyOrderBook++;
+          continue;
+        }
 
         // Calculate liquidity
         const liquidity = calculateLiquidity(market);
@@ -769,7 +785,10 @@ async function getAllUpcomingSportsMarkets(): Promise<MarketDisplay[]> {
   console.log(`   • Markets matching criteria: ${supportedMarkets.length}`);
   console.log(`   • Unique markets: ${uniqueMarkets.length}\n`);
 
-  return uniqueMarkets;
+  return {
+    markets: uniqueMarkets,
+    emptyOrderBookCount: marketsFilteredByEmptyOrderBook,
+  };
 }
 
 /**
@@ -897,7 +916,8 @@ function formatTable(markets: MarketDisplay[]): void {
 
 async function main() {
   try {
-    const markets = await getAllUpcomingSportsMarkets();
+    const { markets, emptyOrderBookCount } =
+      await getAllUpcomingSportsMarkets();
     formatTable(markets);
 
     // Summary stats by market type
@@ -933,6 +953,13 @@ async function main() {
       });
 
     console.log("");
+
+    // Empty order book stats
+    if (emptyOrderBookCount > 0) {
+      console.log(
+        `🚫 Filtered ${emptyOrderBookCount} markets with empty order books\n`,
+      );
+    }
 
     // Save to JSON file
     const fs = await import("fs");

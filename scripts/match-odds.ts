@@ -120,8 +120,8 @@ const BOOKMAKERS = ["pinnacle", "betonlineag", "draftkings", "fanduel"];
 
 // Bookmaker weights for consensus odds calculation
 const BOOKMAKER_WEIGHTS: Record<string, number> = {
-  pinnacle: 0.45,
-  betonlineag: 0.15,
+  pinnacle: 0.5,
+  betonlineag: 0.10,
   draftkings: 0.2,
   fanduel: 0.2,
 };
@@ -592,27 +592,51 @@ function calculateMarketEV(match: MatchedMarket): void {
 
     for (const outcome of market.outcomes) {
       if (pm.marketType === "spreads") {
+        // For spreads, match by team name AND line to ensure correct ordering
         if (pmLine !== null && outcome.point !== undefined) {
-          if (Math.abs(outcome.point - pmLine) < 0.01) {
+          // Check if this outcome matches Polymarket outcome 1 (by team name)
+          if (
+            pm.outcome1Name &&
+            teamsMatch(pm.outcome1Name, outcome.name) &&
+            Math.abs(outcome.point - pmLine) < 0.01
+          ) {
             outcome1Price = outcome.price;
-          } else if (Math.abs(outcome.point + pmLine) < 0.01) {
+          }
+          // Check if this outcome matches Polymarket outcome 2 (by team name)
+          else if (
+            pm.outcome2Name &&
+            teamsMatch(pm.outcome2Name, outcome.name) &&
+            Math.abs(outcome.point + pmLine) < 0.01
+          ) {
             outcome2Price = outcome.price;
           }
         }
       } else if (pm.marketType === "totals") {
+        // For totals, match by outcome name (Over/Under) to ensure correct ordering
         if (pmLine !== null && outcome.point !== undefined) {
           if (Math.abs(outcome.point - pmLine) < 0.01) {
-            if (outcome1Price === null) {
+            // Match by outcome name (Over vs Under)
+            if (
+              pm.outcome1Name &&
+              outcome.name.toLowerCase().includes(pm.outcome1Name.toLowerCase())
+            ) {
               outcome1Price = outcome.price;
-            } else {
+            } else if (
+              pm.outcome2Name &&
+              outcome.name.toLowerCase().includes(pm.outcome2Name.toLowerCase())
+            ) {
               outcome2Price = outcome.price;
             }
           }
         }
       } else {
-        if (outcome1Price === null) {
+        // For h2h, match by team name to ensure correct ordering
+        if (pm.outcome1Name && teamsMatch(pm.outcome1Name, outcome.name)) {
           outcome1Price = outcome.price;
-        } else {
+        } else if (
+          pm.outcome2Name &&
+          teamsMatch(pm.outcome2Name, outcome.name)
+        ) {
           outcome2Price = outcome.price;
         }
       }
@@ -754,33 +778,51 @@ function displayMatches(matches: MatchedMarket[]) {
 
       for (const outcome of market.outcomes) {
         if (pm.marketType === "spreads") {
-          // For spreads, match by EXACT line (including sign)
+          // For spreads, match by team name AND line to ensure correct ordering
           if (pmLine !== null && outcome.point !== undefined) {
-            // Outcome 1: matches the Polymarket line exactly (e.g., -3.5)
-            if (Math.abs(outcome.point - pmLine) < 0.01) {
+            // Check if this outcome matches Polymarket outcome 1 (by team name)
+            if (
+              pm.outcome1Name &&
+              teamsMatch(pm.outcome1Name, outcome.name) &&
+              Math.abs(outcome.point - pmLine) < 0.01
+            ) {
               outcome1Price = outcome.price;
             }
-            // Outcome 2: opposite sign (e.g., +3.5)
-            else if (Math.abs(outcome.point + pmLine) < 0.01) {
+            // Check if this outcome matches Polymarket outcome 2 (by team name)
+            else if (
+              pm.outcome2Name &&
+              teamsMatch(pm.outcome2Name, outcome.name) &&
+              Math.abs(outcome.point + pmLine) < 0.01
+            ) {
               outcome2Price = outcome.price;
             }
           }
         } else if (pm.marketType === "totals") {
-          // For totals, both outcomes have the same point value
+          // For totals, match by outcome name (Over/Under) to ensure correct ordering
           if (pmLine !== null && outcome.point !== undefined) {
             if (Math.abs(outcome.point - pmLine) < 0.01) {
-              if (outcome1Price === null) {
+              // Match by outcome name (Over vs Under)
+              if (
+                pm.outcome1Name &&
+                outcome.name.toLowerCase().includes(pm.outcome1Name.toLowerCase())
+              ) {
                 outcome1Price = outcome.price;
-              } else {
+              } else if (
+                pm.outcome2Name &&
+                outcome.name.toLowerCase().includes(pm.outcome2Name.toLowerCase())
+              ) {
                 outcome2Price = outcome.price;
               }
             }
           }
         } else {
-          // For h2h, just take the two outcomes
-          if (outcome1Price === null) {
+          // For h2h, match by team name to ensure correct ordering
+          if (pm.outcome1Name && teamsMatch(pm.outcome1Name, outcome.name)) {
             outcome1Price = outcome.price;
-          } else {
+          } else if (
+            pm.outcome2Name &&
+            teamsMatch(pm.outcome2Name, outcome.name)
+          ) {
             outcome2Price = outcome.price;
           }
         }
