@@ -59,9 +59,22 @@ export function printMirrorLine(
 ) {
   const p = price !== undefined ? fmtNum(price, 4) : "-";
   const s = size !== undefined ? fmtNum(size, 4) : "-";
-  const status = ok ? "PLACED" : "SKIP";
-  const reasonStr = !ok && reason ? ` (${reason})` : "";
-  console.log(
-    `→ [${status}] ${pad(side, 4)} token=${tokenId} size=${s} price=${p}${reasonStr}`,
-  );
+  
+  if (ok) {
+    // Success cases - make them clear and visible
+    const emoji = side === "BUY" ? "✅ 💰" : "✅ 📤";
+    const action = side === "BUY" ? "BOUGHT" : "SOLD";
+    const notional = price !== undefined && size !== undefined ? fmtUSD(price * size) : "-";
+    console.log(
+      `${emoji} [${action}] ${s} shares @ ${p} = ${notional} (token: ${tokenId.substring(0, 12)}...)`,
+    );
+  } else {
+    // Failure cases
+    const emoji = side === "BUY" ? "❌" : "⚠️";
+    const status = "SKIP";
+    const reasonStr = reason ? ` (${reason})` : "";
+    console.log(
+      `${emoji} [${status}] ${pad(side, 4)} token=${tokenId.substring(0, 12)}... size=${s} price=${p}${reasonStr}`,
+    );
+  }
 }

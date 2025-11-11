@@ -85,11 +85,6 @@ export class PolymarketRealTimeClient {
 
     const trade = message.payload as ActivityTrade;
 
-    // Debug: Log all trades we see
-    console.log(
-      `[WS DEBUG] Trade from ${trade.proxyWallet.substring(0, 10)}... ${trade.side} ${trade.size} @ ${trade.price} (tx: ${trade.transactionHash.substring(0, 10)}...)`,
-    );
-
     // Filter by target wallet
     if (trade.proxyWallet.toLowerCase() !== this.targetWallet) {
       return;

@@ -44,22 +44,9 @@ export async function mirrorTrade(
   const targetPx = roundToTick(t.price, tickSize);
 
   // ============================================================================
-  // 🧪 TESTING MODE: FIXED $1 SPEND PER TRADE
+  // PRODUCTION MODE: Use MAX_NOTIONAL_USDC from .env
   // ============================================================================
-  // This is TEMPORARY for testing latency and detection.
-  //
-  // Current behavior:
-  // - Spends exactly $1 per trade (Polymarket minimum)
-  // - Calculates shares: $1 / price
-  // - Rounds down to minimum order size increments
-  // - Skips if $1 doesn't meet minimum order size
-  //
-  // For PRODUCTION, replace with:
-  //   const notional = CFG.maxNotional;
-  //
-  // This will use the MAX_NOTIONAL_USDC from .env (default $5)
-  // ============================================================================
-  const notional = 1.0; // 🧪 TESTING: $1 exactly (change to CFG.maxNotional for production)
+  const notional = CFG.maxNotional;
   const rawQty = notional / Math.max(targetPx, 0.01);
 
   // Round size DOWN to min-order increments
@@ -71,15 +58,49 @@ export async function mirrorTrade(
     size = minOrder;
     actualNotional = minOrder * targetPx;
     console.log(
-      `[TEST MODE] $1 too small, buying minimum ${minOrder} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
+      `💰 Notional too small, buying minimum ${minOrder} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
     );
   } else {
     console.log(
-      `[TEST MODE] Buying ${size} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
+      `💰 Buying ${size} shares @ ${targetPx} = $${actualNotional.toFixed(2)}`,
     );
   }
 
   const side = t.side === "BUY" ? Side.BUY : Side.SELL;
+
+  // For SELL orders, check balance first and only sell what we own
+  if (side === Side.SELL) {
+    try {
+      recordReq("clob:balance");
+      const balanceResp = await clob.getBalanceAllowance({
+        asset_type: "CONDITIONAL",
+        token_id: t.asset,
+      });
+
+      const ownedShares = parseFloat(balanceResp.balance || "0");
+
+      if (ownedShares < minOrder) {
+        return {
+          ok: false,
+          reason: `no shares to sell (have ${ownedShares.toFixed(2)}, need ${minOrder})`,
+        };
+      }
+
+      // Sell all we own, capped to what the target sold (scaled to our $5 notional)
+      const maxSellSize = Math.floor(ownedShares / minOrder) * minOrder;
+      size = Math.min(size, maxSellSize);
+      actualNotional = size * targetPx;
+
+      console.log(
+        `💰 Selling ${size} shares @ ${targetPx} = $${actualNotional.toFixed(2)} (owned: ${ownedShares.toFixed(2)})`,
+      );
+    } catch (e: any) {
+      return {
+        ok: false,
+        reason: `balance check failed: ${e.message}`,
+      };
+    }
+  }
 
   try {
     // 3) Place a FAK (Fill-And-Kill) order for immediate execution
@@ -89,10 +110,25 @@ export async function mirrorTrade(
     // Calculate the dollar amount to spend (for BUY) or shares to sell (for SELL)
     const amount = side === Side.BUY ? actualNotional : size;
 
+    // Add 3% slippage tolerance:
+    // BUY: willing to pay up to 3% more
+    // SELL: willing to accept up to 3% less
+    const slippageFactor = side === Side.BUY ? 1.03 : 0.97;
+    const priceWithSlippage = Math.min(
+      0.99, // Max price cap (can't go above 0.99)
+      Math.max(0.01, targetPx * slippageFactor) // Min price floor (can't go below 0.01)
+    );
+
+    if (Math.abs(priceWithSlippage - targetPx) > 0.001) {
+      console.log(
+        `🎯 Slippage applied: ${targetPx.toFixed(4)} → ${priceWithSlippage.toFixed(4)} (3%)`,
+      );
+    }
+
     const resp = await clob.createAndPostMarketOrder(
       {
         tokenID: t.asset,
-        price: Number(targetPx.toFixed(6)), // Target price
+        price: Number(priceWithSlippage.toFixed(6)), // Target price + 3% slippage
         amount: Number(amount.toFixed(6)), // $ for BUY, shares for SELL
         side,
         orderType: OrderType.FAK, // Fill-And-Kill
