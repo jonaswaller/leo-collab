@@ -112,6 +112,14 @@ const ODDS_API_KEY = process.env.ODDS_API_KEY!;
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const BOOKMAKERS = ["pinnacle", "betonlineag", "draftkings", "fanduel"];
 
+// Bookmaker weights for consensus odds calculation
+const BOOKMAKER_WEIGHTS: Record<string, number> = {
+  pinnacle: 0.45,
+  betonlineag: 0.15,
+  draftkings: 0.2,
+  fanduel: 0.2,
+};
+
 // Sport mapping: Polymarket -> Odds API
 const SPORT_MAP: Record<string, string> = {
   nfl: "americanfootball_nfl",
@@ -248,6 +256,94 @@ async function fetchOddsForSport(
 }
 
 // ============================================================================
+// ODDS CONVERSION & CONSENSUS
+// ============================================================================
+
+/**
+ * Convert American odds to implied probability
+ */
+function americanToImpliedProb(americanOdds: number): number {
+  if (americanOdds > 0) {
+    return 100 / (americanOdds + 100);
+  } else {
+    return Math.abs(americanOdds) / (Math.abs(americanOdds) + 100);
+  }
+}
+
+/**
+ * Remove vig from two-sided market (normalize to 100%)
+ */
+function removeVig(
+  prob1: number,
+  prob2: number,
+): { fair1: number; fair2: number } {
+  const total = prob1 + prob2;
+  return {
+    fair1: prob1 / total,
+    fair2: prob2 / total,
+  };
+}
+
+/**
+ * Calculate weighted consensus odds from multiple bookmakers
+ * Returns fair probability for each outcome after removing vig
+ */
+function calculateWeightedConsensus(
+  bookmakerOdds: Array<{
+    bookmaker: string;
+    outcome1Price: number;
+    outcome2Price: number;
+  }>,
+): { consensus1: number; consensus2: number } | null {
+  if (bookmakerOdds.length === 0) return null;
+
+  // Calculate available weights and normalize to 100%
+  let totalWeight = 0;
+  const normalizedWeights: Record<string, number> = {};
+
+  for (const { bookmaker } of bookmakerOdds) {
+    const weight = BOOKMAKER_WEIGHTS[bookmaker] || 0;
+    totalWeight += weight;
+    normalizedWeights[bookmaker] = weight;
+  }
+
+  if (totalWeight === 0) return null;
+
+  // Normalize weights to sum to 1.0
+  for (const bookmaker in normalizedWeights) {
+    const currentWeight = normalizedWeights[bookmaker];
+    if (currentWeight !== undefined) {
+      normalizedWeights[bookmaker] = currentWeight / totalWeight;
+    }
+  }
+
+  // Calculate weighted average of de-vigged probabilities
+  let weightedFair1 = 0;
+  let weightedFair2 = 0;
+
+  for (const { bookmaker, outcome1Price, outcome2Price } of bookmakerOdds) {
+    const weight = normalizedWeights[bookmaker];
+    if (!weight) continue;
+
+    // Convert to implied probabilities
+    const implied1 = americanToImpliedProb(outcome1Price);
+    const implied2 = americanToImpliedProb(outcome2Price);
+
+    // Remove vig
+    const { fair1, fair2 } = removeVig(implied1, implied2);
+
+    // Add weighted contribution
+    weightedFair1 += fair1 * weight;
+    weightedFair2 += fair2 * weight;
+  }
+
+  return {
+    consensus1: weightedFair1,
+    consensus2: weightedFair2,
+  };
+}
+
+// ============================================================================
 // MATCHING LOGIC
 // ============================================================================
 
@@ -281,6 +377,15 @@ function extractLine(question: string, marketType: MarketType): number | null {
   }
 
   return null;
+}
+
+/**
+ * Extract the favored team from a spread market question
+ * E.g., "Spread: Clippers (-6.5)" returns "Clippers"
+ */
+function extractSpreadTeam(question: string): string | null {
+  const match = question.match(/spread:\s*([^(]+)\s*\(/i);
+  return match && match[1] ? match[1].trim() : null;
 }
 
 function isFirstHalf(question: string): boolean {
@@ -487,10 +592,86 @@ function displayMatches(matches: MatchedMarket[]) {
     }
 
     console.log(`│`.padEnd(120) + "│");
+
+    // Calculate weighted consensus
+    const pmLine = extractLine(pm.marketQuestion, pm.marketType);
+    const bookmakerOdds: Array<{
+      bookmaker: string;
+      outcome1Price: number;
+      outcome2Price: number;
+    }> = [];
+
+    for (const bookKey of bookmakers) {
+      const bookData = match.sportsbooks[bookKey];
+      if (!bookData) continue;
+      const { market } = bookData;
+
+      // Extract the two outcomes for this line
+      let outcome1Price: number | null = null;
+      let outcome2Price: number | null = null;
+
+      for (const outcome of market.outcomes) {
+        if (pm.marketType === "spreads") {
+          // For spreads, match by EXACT line (including sign)
+          if (pmLine !== null && outcome.point !== undefined) {
+            // Outcome 1: matches the Polymarket line exactly (e.g., -3.5)
+            if (Math.abs(outcome.point - pmLine) < 0.01) {
+              outcome1Price = outcome.price;
+            }
+            // Outcome 2: opposite sign (e.g., +3.5)
+            else if (Math.abs(outcome.point + pmLine) < 0.01) {
+              outcome2Price = outcome.price;
+            }
+          }
+        } else if (pm.marketType === "totals") {
+          // For totals, both outcomes have the same point value
+          if (pmLine !== null && outcome.point !== undefined) {
+            if (Math.abs(outcome.point - pmLine) < 0.01) {
+              if (outcome1Price === null) {
+                outcome1Price = outcome.price;
+              } else {
+                outcome2Price = outcome.price;
+              }
+            }
+          }
+        } else {
+          // For h2h, just take the two outcomes
+          if (outcome1Price === null) {
+            outcome1Price = outcome.price;
+          } else {
+            outcome2Price = outcome.price;
+          }
+        }
+      }
+
+      if (outcome1Price !== null && outcome2Price !== null) {
+        bookmakerOdds.push({
+          bookmaker: bookKey,
+          outcome1Price,
+          outcome2Price,
+        });
+      }
+    }
+
+    const consensus = calculateWeightedConsensus(bookmakerOdds);
+
+    if (consensus) {
+      console.log(`│ WEIGHTED CONSENSUS (de-vigged):`.padEnd(120) + "│");
+      const cons1 = (consensus.consensus1 * 100).toFixed(1);
+      const cons2 = (consensus.consensus2 * 100).toFixed(1);
+      console.log(
+        `│   Outcome 1: ${cons1.padStart(5)}%  |  Outcome 2: ${cons2.padStart(5)}%`.padEnd(
+          120,
+        ) + "│",
+      );
+      console.log(`│`.padEnd(120) + "│");
+    }
+
     console.log(`│ SPORTSBOOKS (${bookmakers.length}):`.padEnd(120) + "│");
 
-    // Sportsbooks - only show outcomes matching the Polymarket line
-    const pmLine = extractLine(pm.marketQuestion, pm.marketType);
+    // For spreads, extract which team is favored from the Polymarket question
+    const spreadTeam =
+      pm.marketType === "spreads" ? extractSpreadTeam(pm.marketQuestion) : null;
 
     for (const bookKey of bookmakers) {
       const bookData = match.sportsbooks[bookKey];
@@ -500,9 +681,25 @@ function displayMatches(matches: MatchedMarket[]) {
 
       for (const outcome of market.outcomes) {
         // For spreads/totals with alternate lines, only show the matching line
-        if (pm.marketType === "spreads" || pm.marketType === "totals") {
+        if (pm.marketType === "spreads") {
+          if (pmLine !== null && outcome.point !== undefined && spreadTeam) {
+            // For spreads, only show the relevant pair:
+            // 1. The favored team with the negative line (e.g., Clippers -6.5)
+            // 2. The underdog team with the positive line (e.g., Hawks +6.5)
+
+            const isFavoredTeam = teamsMatch(spreadTeam, outcome.name);
+            const matchesFavoredLine = Math.abs(outcome.point - pmLine) < 0.01;
+            const matchesUnderdogLine = Math.abs(outcome.point + pmLine) < 0.01;
+
+            // Show if: (favored team with negative line) OR (other team with positive line)
+            const shouldShow =
+              (isFavoredTeam && matchesFavoredLine) ||
+              (!isFavoredTeam && matchesUnderdogLine);
+            if (!shouldShow) continue;
+          }
+        } else if (pm.marketType === "totals") {
           if (pmLine !== null && outcome.point !== undefined) {
-            // Skip if this outcome doesn't match the Polymarket line
+            // For totals, only show outcomes matching the exact line
             if (Math.abs(outcome.point - pmLine) >= 0.01) continue;
           }
         }
