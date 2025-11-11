@@ -108,6 +108,25 @@ interface MatchedMarket {
     bestEV: number | null;
     bestOutcome: string | null;
   };
+  makerEV?: {
+    // Outcome 1 maker opportunities
+    outcome1BidPrice: number | null; // Price to post bid at
+    outcome1BidMargin: number | null; // Margin % if filled
+    outcome1BidEV: number | null; // EV if filled
+    outcome1AskPrice: number | null; // Price to post ask at
+    outcome1AskMargin: number | null; // Margin % if filled
+    outcome1AskEV: number | null; // EV if filled
+    // Outcome 2 maker opportunities
+    outcome2BidPrice: number | null;
+    outcome2BidMargin: number | null;
+    outcome2BidEV: number | null;
+    outcome2AskPrice: number | null;
+    outcome2AskMargin: number | null;
+    outcome2AskEV: number | null;
+    // Best maker opportunity
+    bestMakerEV: number | null;
+    bestMakerSide: string | null; // e.g., "Outcome 1 Bid"
+  };
 }
 
 // ============================================================================
@@ -121,10 +140,25 @@ const BOOKMAKERS = ["pinnacle", "betonlineag", "draftkings", "fanduel"];
 // Bookmaker weights for consensus odds calculation
 const BOOKMAKER_WEIGHTS: Record<string, number> = {
   pinnacle: 0.5,
-  betonlineag: 0.10,
+  betonlineag: 0.1,
   draftkings: 0.2,
   fanduel: 0.2,
 };
+
+// Market maker margin ranges by market type
+const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
+  h2h: { min: 0.03, max: 0.08 },
+  spreads: { min: 0.04, max: 0.09 },
+  totals: { min: 0.04, max: 0.09 },
+  h2h_h1: { min: 0.06, max: 0.12 },
+  spreads_h1: { min: 0.06, max: 0.12 },
+  totals_h1: { min: 0.06, max: 0.12 },
+};
+
+// Market making strategy: improve by 1 tick or jump to target?
+// "incremental" = improve current best by 1% (maximize fill probability)
+// "target" = use calculated target price (maximize margin)
+const MAKER_STRATEGY: "incremental" | "target" = "incremental";
 
 // Sport mapping: Polymarket -> Odds API
 const SPORT_MAP: Record<string, string> = {
@@ -565,8 +599,190 @@ function matchMarket(
 }
 
 /**
+ * Determine if market is first-half based on market type or question
+ */
+function isFirstHalfMarket(pm: PolymarketMarket): boolean {
+  return isFirstHalf(pm.marketQuestion);
+}
+
+/**
+ * Get margin range for market type
+ */
+function getMarginRange(pm: PolymarketMarket): { min: number; max: number } {
+  const isFirstHalfMkt = isFirstHalfMarket(pm);
+  const marketTypeKey = isFirstHalfMkt ? `${pm.marketType}_h1` : pm.marketType;
+
+  return (
+    MAKER_MARGINS[marketTypeKey] ||
+    MAKER_MARGINS[pm.marketType] || { min: 0.04, max: 0.09 }
+  );
+}
+
+/**
+ * Round price to whole percentage points (0.01 increments)
+ * Polymarket only allows prices like 0.24, 0.25, 0.26 (not 0.245)
+ */
+function roundToWholePercent(price: number, direction: "up" | "down"): number {
+  if (direction === "up") {
+    return Math.min(0.99, Math.ceil(price * 100) / 100);
+  } else {
+    return Math.max(0.01, Math.floor(price * 100) / 100);
+  }
+}
+
+/**
+ * Calculate maker EV for posting limit orders
+ * Returns optimal bid/ask prices within margin bounds
+ *
+ * Rules:
+ * - Prices must be whole percentages (0.24, 0.25, not 0.245)
+ * - Can match current best price (tie is acceptable)
+ * - Must maintain minimum margin after rounding
+ */
+function calculateMakerEV(
+  match: MatchedMarket,
+  fairProb1: number,
+  fairProb2: number,
+): void {
+  const pm = match.polymarket;
+  const marginRange = getMarginRange(pm);
+
+  // Initialize maker EV object
+  match.makerEV = {
+    outcome1BidPrice: null,
+    outcome1BidMargin: null,
+    outcome1BidEV: null,
+    outcome1AskPrice: null,
+    outcome1AskMargin: null,
+    outcome1AskEV: null,
+    outcome2BidPrice: null,
+    outcome2BidMargin: null,
+    outcome2BidEV: null,
+    outcome2AskPrice: null,
+    outcome2AskMargin: null,
+    outcome2AskEV: null,
+    bestMakerEV: null,
+    bestMakerSide: null,
+  };
+
+  // Outcome 1: Calculate bid opportunity (buying at discount)
+  // Target: fair - (fair × min_margin), then round DOWN to be conservative
+  const outcome1BidTarget = fairProb1 - fairProb1 * marginRange.min;
+  let outcome1BidPrice = roundToWholePercent(outcome1BidTarget, "down");
+
+  // Apply market making strategy
+  if (MAKER_STRATEGY === "incremental" && pm.bestBid !== undefined) {
+    // Incremental: improve current best by 1 tick (maximize fill probability)
+    // But don't exceed our target (which would violate margin requirements)
+    const improvedBid = Math.min(0.99, pm.bestBid + 0.01);
+    if (improvedBid <= outcome1BidPrice) {
+      // We can afford to improve by 1 tick and still meet margin
+      outcome1BidPrice = improvedBid;
+    }
+    // Otherwise, use our target price (which is lower than improved bid)
+  }
+
+  // Ensure we're at least as good as current best bid (match if we can't improve)
+  if (pm.bestBid !== undefined && outcome1BidPrice < pm.bestBid) {
+    outcome1BidPrice = pm.bestBid;
+  }
+
+  // If our bid would cross the spread (>= ask), step down by 1% until we don't cross
+  if (pm.bestAsk !== undefined) {
+    while (outcome1BidPrice >= pm.bestAsk && outcome1BidPrice > 0.01) {
+      outcome1BidPrice -= 0.01; // Step down by 1%
+    }
+  }
+
+  const outcome1BidMargin = (fairProb1 - outcome1BidPrice) / fairProb1;
+  const outcome1BidEV = outcome1BidMargin; // EV = margin earned if filled
+
+  // Only post if: (1) doesn't cross spread, (2) margin meets minimum, (3) at or better than current bid
+  const bidMeetsMinimum = outcome1BidMargin >= marginRange.min;
+  const bidIsCompetitive =
+    pm.bestBid === undefined || outcome1BidPrice >= pm.bestBid;
+  if (
+    (pm.bestAsk === undefined || outcome1BidPrice < pm.bestAsk) &&
+    bidMeetsMinimum &&
+    bidIsCompetitive
+  ) {
+    match.makerEV.outcome1BidPrice = outcome1BidPrice;
+    match.makerEV.outcome1BidMargin = outcome1BidMargin;
+    match.makerEV.outcome1BidEV = outcome1BidEV;
+  }
+
+  // NOTE: We don't calculate ASK opportunities for Outcome 1
+  // Reason: Can't sell shares we don't own (would need to buy first)
+  // Instead, bidding on Outcome 2 is equivalent to asking on Outcome 1 (reciprocal)
+
+  // Outcome 2: Calculate bid opportunity
+  const outcome2BidTarget = fairProb2 - fairProb2 * marginRange.min;
+  let outcome2BidPrice = roundToWholePercent(outcome2BidTarget, "down");
+
+  // Apply market making strategy
+  if (MAKER_STRATEGY === "incremental" && pm.outcome2Bid !== undefined) {
+    const improvedBid = Math.min(0.99, pm.outcome2Bid + 0.01);
+    if (improvedBid <= outcome2BidPrice) {
+      outcome2BidPrice = improvedBid;
+    }
+  }
+
+  // Ensure we're at least as good as current best bid
+  if (pm.outcome2Bid !== undefined && outcome2BidPrice < pm.outcome2Bid) {
+    outcome2BidPrice = pm.outcome2Bid;
+  }
+
+  // If our calculated bid would cross the spread, step down by 1%
+  if (pm.outcome2Ask !== undefined) {
+    while (outcome2BidPrice >= pm.outcome2Ask && outcome2BidPrice > 0.01) {
+      outcome2BidPrice -= 0.01;
+    }
+  }
+
+  const outcome2BidMargin = (fairProb2 - outcome2BidPrice) / fairProb2;
+  const outcome2BidEV = outcome2BidMargin;
+
+  const bid2MeetsMinimum = outcome2BidMargin >= marginRange.min;
+  const bid2IsCompetitive =
+    pm.outcome2Bid === undefined || outcome2BidPrice >= pm.outcome2Bid;
+  if (
+    (pm.outcome2Ask === undefined || outcome2BidPrice < pm.outcome2Ask) &&
+    bid2MeetsMinimum &&
+    bid2IsCompetitive
+  ) {
+    match.makerEV.outcome2BidPrice = outcome2BidPrice;
+    match.makerEV.outcome2BidMargin = outcome2BidMargin;
+    match.makerEV.outcome2BidEV = outcome2BidEV;
+  }
+
+  // NOTE: We don't calculate ASK opportunities for Outcome 2
+  // Reason: Can't sell shares we don't own (would need to buy first)
+  // Instead, bidding on Outcome 1 is equivalent to asking on Outcome 2 (reciprocal)
+
+  // Find best maker opportunity (BIDS ONLY - can't sell shares we don't own)
+  const opportunities = [
+    {
+      ev: match.makerEV.outcome1BidEV,
+      side: `${pm.outcome1Name || "Outcome 1"} Bid`,
+    },
+    {
+      ev: match.makerEV.outcome2BidEV,
+      side: `${pm.outcome2Name || "Outcome 2"} Bid`,
+    },
+  ].filter((o) => o.ev !== null);
+
+  if (opportunities.length > 0) {
+    const best = opportunities.reduce((a, b) =>
+      (a.ev ?? 0) > (b.ev ?? 0) ? a : b,
+    );
+    match.makerEV.bestMakerEV = best.ev;
+    match.makerEV.bestMakerSide = best.side;
+  }
+}
+
+/**
  * Calculate EV for a matched market by comparing consensus fair odds
- * against Polymarket ask prices
+ * against Polymarket ask prices (TAKER EV)
  */
 function calculateMarketEV(match: MatchedMarket): void {
   const pm = match.polymarket;
@@ -692,6 +908,9 @@ function calculateMarketEV(match: MatchedMarket): void {
     bestEV,
     bestOutcome,
   };
+
+  // Also calculate maker EV
+  calculateMakerEV(match, consensus.consensus1, consensus.consensus2);
 }
 
 // ============================================================================
@@ -804,12 +1023,16 @@ function displayMatches(matches: MatchedMarket[]) {
               // Match by outcome name (Over vs Under)
               if (
                 pm.outcome1Name &&
-                outcome.name.toLowerCase().includes(pm.outcome1Name.toLowerCase())
+                outcome.name
+                  .toLowerCase()
+                  .includes(pm.outcome1Name.toLowerCase())
               ) {
                 outcome1Price = outcome.price;
               } else if (
                 pm.outcome2Name &&
-                outcome.name.toLowerCase().includes(pm.outcome2Name.toLowerCase())
+                outcome.name
+                  .toLowerCase()
+                  .includes(pm.outcome2Name.toLowerCase())
               ) {
                 outcome2Price = outcome.price;
               }
@@ -851,9 +1074,11 @@ function displayMatches(matches: MatchedMarket[]) {
       console.log(`│`.padEnd(120) + "│");
     }
 
-    // Display EV
+    // Display TAKER EV
     if (match.ev) {
-      console.log(`│ EXPECTED VALUE (EV):`.padEnd(120) + "│");
+      console.log(
+        `│ TAKER EV (buy at ask, immediate execution):`.padEnd(120) + "│",
+      );
 
       if (match.ev.outcome1EV !== null) {
         const ev1Pct = (match.ev.outcome1EV * 100).toFixed(2);
@@ -894,7 +1119,63 @@ function displayMatches(matches: MatchedMarket[]) {
         const bestEvEmoji =
           match.ev.bestEV > 0.05 ? "🎯" : match.ev.bestEV > 0 ? "✅" : "⚠️";
         console.log(
-          `│   ${bestEvEmoji} BEST: ${match.ev.bestOutcome} at ${bestEvSign}${bestEvPct}% EV`.padEnd(
+          `│   ${bestEvEmoji} BEST TAKER: ${match.ev.bestOutcome} at ${bestEvSign}${bestEvPct}% EV`.padEnd(
+            120,
+          ) + "│",
+        );
+      }
+
+      console.log(`│`.padEnd(120) + "│");
+    }
+
+    // Display MAKER EV
+    if (match.makerEV) {
+      const marginRange = getMarginRange(pm);
+      const marginRangePct = `${(marginRange.min * 100).toFixed(0)}-${(marginRange.max * 100).toFixed(0)}%`;
+
+      console.log(
+        `│ MAKER EV (post limit orders, ${marginRangePct} margin):`.padEnd(
+          120,
+        ) + "│",
+      );
+
+      // Outcome 1 BID opportunities only
+      if (match.makerEV.outcome1BidEV !== null) {
+        const outcome1Label = pm.outcome1Name || "Outcome 1";
+        const bidPrice = (match.makerEV.outcome1BidPrice! * 100).toFixed(1);
+        const bidMargin = (match.makerEV.outcome1BidMargin! * 100).toFixed(1);
+        const bidEV = (match.makerEV.outcome1BidEV * 100).toFixed(2);
+        const currentBid =
+          pm.bestBid !== undefined ? (pm.bestBid * 100).toFixed(1) : "N/A";
+        console.log(
+          `│   ${outcome1Label.padEnd(20)} BID @ ${bidPrice.padStart(5)}% (cur: ${currentBid.padStart(5)}%) → ${bidMargin.padStart(4)}% margin = +${bidEV}% EV`.padEnd(
+            120,
+          ) + "│",
+        );
+      }
+
+      // Outcome 2 BID opportunities only
+      if (match.makerEV.outcome2BidEV !== null) {
+        const outcome2Label = pm.outcome2Name || "Outcome 2";
+        const bidPrice = (match.makerEV.outcome2BidPrice! * 100).toFixed(1);
+        const bidMargin = (match.makerEV.outcome2BidMargin! * 100).toFixed(1);
+        const bidEV = (match.makerEV.outcome2BidEV * 100).toFixed(2);
+        const currentBid =
+          pm.outcome2Bid !== undefined
+            ? (pm.outcome2Bid * 100).toFixed(1)
+            : "N/A";
+        console.log(
+          `│   ${outcome2Label.padEnd(20)} BID @ ${bidPrice.padStart(5)}% (cur: ${currentBid.padStart(5)}%) → ${bidMargin.padStart(4)}% margin = +${bidEV}% EV`.padEnd(
+            120,
+          ) + "│",
+        );
+      }
+
+      if (match.makerEV.bestMakerEV !== null && match.makerEV.bestMakerSide) {
+        console.log(`│`.padEnd(120) + "│");
+        const bestMakerEvPct = (match.makerEV.bestMakerEV * 100).toFixed(2);
+        console.log(
+          `│   💰 BEST MAKER: ${match.makerEV.bestMakerSide} at +${bestMakerEvPct}% EV`.padEnd(
             120,
           ) + "│",
         );
@@ -983,26 +1264,50 @@ function displayMatches(matches: MatchedMarket[]) {
   console.log(`   • Skipped: ${skipped.length}`);
   console.log(`   • Total: ${matches.length}`);
 
-  // EV breakdown
-  const positiveEV = matched.filter(
+  // TAKER EV breakdown
+  const positiveTakerEV = matched.filter(
     (m) => m.ev && m.ev.bestEV && m.ev.bestEV > 0,
   );
-  const strongPositiveEV = matched.filter(
+  const strongTakerEV = matched.filter(
     (m) => m.ev && m.ev.bestEV && m.ev.bestEV > 0.05,
   );
 
-  if (matched.length > 0) {
-    console.log(`\n💰 EV Breakdown:`);
-    console.log(`   • Positive EV opportunities: ${positiveEV.length}`);
-    console.log(`   • Strong +EV (>5%): ${strongPositiveEV.length}`);
+  // MAKER EV breakdown
+  const positiveMakerEV = matched.filter(
+    (m) => m.makerEV && m.makerEV.bestMakerEV && m.makerEV.bestMakerEV > 0,
+  );
+  const strongMakerEV = matched.filter(
+    (m) => m.makerEV && m.makerEV.bestMakerEV && m.makerEV.bestMakerEV > 0.05,
+  );
 
-    if (strongPositiveEV.length > 0) {
-      console.log(`\n🎯 Top Opportunities:`);
-      strongPositiveEV.slice(0, 5).forEach((m, i) => {
+  if (matched.length > 0) {
+    console.log(`\n💰 TAKER EV Breakdown (immediate execution):`);
+    console.log(`   • Positive EV opportunities: ${positiveTakerEV.length}`);
+    console.log(`   • Strong +EV (>5%): ${strongTakerEV.length}`);
+
+    if (strongTakerEV.length > 0) {
+      console.log(`\n🎯 Top Taker Opportunities:`);
+      strongTakerEV.slice(0, 5).forEach((m, i) => {
         const evPct = ((m.ev?.bestEV ?? 0) * 100).toFixed(2);
         console.log(`   ${i + 1}. ${m.polymarket.eventTitle}`);
         console.log(`      ${m.polymarket.marketQuestion}`);
         console.log(`      ${m.ev?.bestOutcome}: +${evPct}% EV`);
+      });
+    }
+
+    console.log(`\n💰 MAKER EV Breakdown (post limit orders):`);
+    console.log(
+      `   • Markets with maker opportunities: ${positiveMakerEV.length}`,
+    );
+    console.log(`   • Strong maker +EV (>5%): ${strongMakerEV.length}`);
+
+    if (strongMakerEV.length > 0) {
+      console.log(`\n🏦 Top Maker Opportunities:`);
+      strongMakerEV.slice(0, 10).forEach((m, i) => {
+        const evPct = ((m.makerEV?.bestMakerEV ?? 0) * 100).toFixed(2);
+        console.log(`   ${i + 1}. ${m.polymarket.eventTitle}`);
+        console.log(`      ${m.polymarket.marketQuestion}`);
+        console.log(`      ${m.makerEV?.bestMakerSide}: +${evPct}% EV`);
       });
     }
   }
