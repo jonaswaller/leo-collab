@@ -28,7 +28,7 @@
  * - Direct links to Polymarket event and market pages
  * - Summary statistics by sport and market type
  *
- * Phantom Market Detection:
+ * Phantom Market Detection: [CHANGE TO - REMOVE MARKETS WHERE NOTHING AT ALL IN ORDER BOOK]
  * - Filters markets with spreads > 90% (e.g., 0.01/0.99)
  * - Filters markets with $0 liquidity AND spreads > 50%
  * - Filters markets with bid < 2% AND ask > 98%

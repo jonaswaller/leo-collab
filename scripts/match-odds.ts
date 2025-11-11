@@ -183,61 +183,41 @@ async function fetchOddsForSport(
       `  ✓ ${sportKey}: ${events.length}/${allEvents.length} events (filtered to Polymarket events only)`,
     );
 
-    // Only fetch first-half markets for events that need them (optimization!)
-    const eventsToFetch = events.filter((event) => {
-      // Check if any Polymarket market for this event needs first-half data
-      // Use fuzzy matching since team names might not be exact
-      const homeNorm = normalizeTeam(event.home_team);
-      const awayNorm = normalizeTeam(event.away_team);
-
-      for (const pmEventKey of eventsNeedingFirstHalf) {
-        const [pmHome, pmAway] = pmEventKey.split("|");
-        if (!pmHome || !pmAway) continue;
-        // Check if teams match (either direction)
-        const match1 =
-          (homeNorm.includes(pmHome) || pmHome.includes(homeNorm)) &&
-          (awayNorm.includes(pmAway) || pmAway.includes(awayNorm));
-        const match2 =
-          (homeNorm.includes(pmAway) || pmAway.includes(homeNorm)) &&
-          (awayNorm.includes(pmHome) || pmHome.includes(awayNorm));
-        if (match1 || match2) return true;
-      }
-      return false;
-    });
-
-    if (eventsToFetch.length > 0) {
-      console.log(
-        `  → Fetching 1H markets for ${eventsToFetch.length}/${events.length} events`,
-      );
+    // Fetch alternate lines for ALL events (to match any Polymarket line)
+    if (events.length > 0) {
+      console.log(`  → Fetching alternate lines for ${events.length} events`);
     }
 
-    for (const event of eventsToFetch) {
+    for (const event of events) {
       try {
-        const firstHalfResponse = await axios.get<OddsAPIEvent>(
+        // Fetch ALL alternate markets to match any Polymarket line
+        // This includes: alternate_spreads, alternate_totals, and first-half variants
+        const alternateResponse = await axios.get<OddsAPIEvent>(
           `${ODDS_API_BASE}/sports/${sportKey}/events/${event.id}/odds`,
           {
             params: {
               apiKey: ODDS_API_KEY,
               regions: "us",
-              markets: "h2h_h1,spreads_h1,totals_h1",
+              markets:
+                "alternate_spreads,alternate_totals,h2h_h1,spreads_h1,totals_h1,alternate_spreads_h1,alternate_totals_h1",
               oddsFormat: "american",
               bookmakers: BOOKMAKERS.join(","),
             },
           },
         );
 
-        // Merge first-half markets into the event's bookmakers
-        if (firstHalfResponse.data.bookmakers) {
-          for (const fhBookmaker of firstHalfResponse.data.bookmakers) {
+        // Merge alternate markets into the event's bookmakers
+        if (alternateResponse.data.bookmakers) {
+          for (const altBookmaker of alternateResponse.data.bookmakers) {
             const existingBookmaker = event.bookmakers.find(
-              (b) => b.key === fhBookmaker.key,
+              (b) => b.key === altBookmaker.key,
             );
             if (existingBookmaker) {
-              // Add first-half markets to existing bookmaker
-              existingBookmaker.markets.push(...fhBookmaker.markets);
+              // Add alternate markets to existing bookmaker
+              existingBookmaker.markets.push(...altBookmaker.markets);
             } else {
-              // Add new bookmaker with first-half markets
-              event.bookmakers.push(fhBookmaker);
+              // Add new bookmaker with alternate markets
+              event.bookmakers.push(altBookmaker);
             }
           }
         }
@@ -245,10 +225,10 @@ async function fetchOddsForSport(
         // Rate limit: 30 req/sec
         await new Promise((resolve) => setTimeout(resolve, 50));
       } catch (error: any) {
-        // Silently skip if first-half markets not available for this event
+        // Silently skip if alternate markets not available for this event
         if (error.response?.status !== 404) {
           console.warn(
-            `  Warning: Could not fetch 1H markets for event ${event.id}`,
+            `  Warning: Could not fetch alternate markets for event ${event.id}`,
           );
         }
       }
@@ -360,31 +340,59 @@ function matchMarket(
 
   // Determine if this is a first-half market
   const isFirstHalfMarket = isFirstHalf(pmMarket.marketQuestion);
-  const oddsAPIMarketKey = getOddsAPIMarketKey(
-    pmMarket.marketType,
-    isFirstHalfMarket,
-  );
+
+  // Build list of possible market keys to check (featured + alternate)
+  const possibleMarketKeys: string[] = [];
+  if (pmMarket.marketType === "h2h") {
+    possibleMarketKeys.push(isFirstHalfMarket ? "h2h_h1" : "h2h");
+  } else if (pmMarket.marketType === "spreads") {
+    if (isFirstHalfMarket) {
+      possibleMarketKeys.push("spreads_h1", "alternate_spreads_h1");
+    } else {
+      possibleMarketKeys.push("spreads", "alternate_spreads");
+    }
+  } else if (pmMarket.marketType === "totals") {
+    if (isFirstHalfMarket) {
+      possibleMarketKeys.push("totals_h1", "alternate_totals_h1");
+    } else {
+      possibleMarketKeys.push("totals", "alternate_totals");
+    }
+  }
 
   // Match each bookmaker
   for (const bookmaker of matchingEvent.bookmakers) {
     if (!BOOKMAKERS.includes(bookmaker.key)) continue;
 
-    const oddsMarket = bookmaker.markets.find(
-      (m) => m.key === oddsAPIMarketKey,
-    );
-    if (!oddsMarket) continue;
+    // Try to find a matching market with the exact line (check both featured and alternate)
+    let oddsMarket: OddsAPIMarket | undefined;
 
-    // For spreads/totals, check exact line match
     if (pmMarket.marketType === "spreads" || pmMarket.marketType === "totals") {
+      // For spreads/totals, find a market that has the exact line
       if (pmLine === null) continue;
 
-      const hasMatchingLine = oddsMarket.outcomes.some((outcome) => {
-        if (outcome.point === undefined) return false;
-        return Math.abs(outcome.point - pmLine) < 0.01;
-      });
+      for (const marketKey of possibleMarketKeys) {
+        const market = bookmaker.markets.find((m) => m.key === marketKey);
+        if (!market) continue;
 
-      if (!hasMatchingLine) continue;
+        const hasMatchingLine = market.outcomes.some((outcome) => {
+          if (outcome.point === undefined) return false;
+          return Math.abs(outcome.point - pmLine) < 0.01;
+        });
+
+        if (hasMatchingLine) {
+          oddsMarket = market;
+          break;
+        }
+      }
+    } else {
+      // For h2h, just find any matching market
+      for (const marketKey of possibleMarketKeys) {
+        oddsMarket = bookmaker.markets.find((m) => m.key === marketKey);
+        if (oddsMarket) break;
+      }
     }
+
+    if (!oddsMarket) continue;
 
     result.sportsbooks[bookmaker.key] = {
       market: oddsMarket,
@@ -395,7 +403,27 @@ function matchMarket(
   // Set skip reason if no matches
   if (Object.keys(result.sportsbooks).length === 0) {
     if (pmLine !== null) {
-      result.skipReason = `No sportsbooks offer line ${pmLine}`;
+      // Collect available lines from sportsbooks for debugging
+      const availableLines = new Set<number>();
+      for (const bookmaker of matchingEvent.bookmakers) {
+        if (!BOOKMAKERS.includes(bookmaker.key)) continue;
+
+        for (const marketKey of possibleMarketKeys) {
+          const market = bookmaker.markets.find((m) => m.key === marketKey);
+          if (market) {
+            for (const outcome of market.outcomes) {
+              if (outcome.point !== undefined) {
+                availableLines.add(outcome.point);
+              }
+            }
+          }
+        }
+      }
+
+      const linesStr = Array.from(availableLines)
+        .sort((a, b) => a - b)
+        .join(", ");
+      result.skipReason = `No sportsbooks offer line ${pmLine} (${pmMarket.eventTitle} - ${pmMarket.marketType}). Available: ${linesStr || "none"}`;
     } else {
       result.skipReason = "No matching markets";
     }
@@ -461,7 +489,9 @@ function displayMatches(matches: MatchedMarket[]) {
     console.log(`│`.padEnd(120) + "│");
     console.log(`│ SPORTSBOOKS (${bookmakers.length}):`.padEnd(120) + "│");
 
-    // Sportsbooks
+    // Sportsbooks - only show outcomes matching the Polymarket line
+    const pmLine = extractLine(pm.marketQuestion, pm.marketType);
+
     for (const bookKey of bookmakers) {
       const bookData = match.sportsbooks[bookKey];
       if (!bookData) continue;
@@ -469,6 +499,14 @@ function displayMatches(matches: MatchedMarket[]) {
       console.log(`│   ${bookKey.toUpperCase()}:`.padEnd(120) + "│");
 
       for (const outcome of market.outcomes) {
+        // For spreads/totals with alternate lines, only show the matching line
+        if (pm.marketType === "spreads" || pm.marketType === "totals") {
+          if (pmLine !== null && outcome.point !== undefined) {
+            // Skip if this outcome doesn't match the Polymarket line
+            if (Math.abs(outcome.point - pmLine) >= 0.01) continue;
+          }
+        }
+
         const price =
           outcome.price > 0 ? `+${outcome.price}` : `${outcome.price}`;
         const point =
