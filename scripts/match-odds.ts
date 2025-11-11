@@ -93,6 +93,17 @@ interface OddsAPIEvent {
   bookmakers: OddsAPIBookmaker[];
 }
 
+interface KellySize {
+  edge: number;
+  kellyFraction: number;
+  rawKellySizeUSD: number;
+  rawKellyShares: number;
+  constrainedSizeUSD: number;
+  constrainedShares: number;
+  limitingFactor: string;
+  bankrollPct: number;
+}
+
 interface MatchedMarket {
   polymarket: PolymarketMarket;
   sportsbooks: {
@@ -107,12 +118,16 @@ interface MatchedMarket {
     outcome2EV: number | null;
     bestEV: number | null;
     bestOutcome: string | null;
+    // Kelly sizing for taker opportunities
+    outcome1Kelly: KellySize | null;
+    outcome2Kelly: KellySize | null;
   };
   makerEV?: {
     // Outcome 1 maker opportunities
     outcome1BidPrice: number | null; // Price to post bid at
     outcome1BidMargin: number | null; // Margin % if filled
     outcome1BidEV: number | null; // EV if filled
+    outcome1BidKelly: KellySize | null; // Kelly sizing for this bid
     outcome1AskPrice: number | null; // Price to post ask at
     outcome1AskMargin: number | null; // Margin % if filled
     outcome1AskEV: number | null; // EV if filled
@@ -120,6 +135,7 @@ interface MatchedMarket {
     outcome2BidPrice: number | null;
     outcome2BidMargin: number | null;
     outcome2BidEV: number | null;
+    outcome2BidKelly: KellySize | null; // Kelly sizing for this bid
     outcome2AskPrice: number | null;
     outcome2AskMargin: number | null;
     outcome2AskEV: number | null;
@@ -155,10 +171,45 @@ const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
   totals_h1: { min: 0.06, max: 0.12 },
 };
 
+// Market taker minimum EV thresholds by market type (no maximums)
+const TAKER_MARGINS: Record<string, number> = {
+  h2h: 0.02, // 2% minimum for moneyline
+  spreads: 0.03, // 3% minimum for spreads
+  totals: 0.03, // 3% minimum for totals
+  h2h_h1: 0.05, // 5% minimum for 1st half moneyline
+  spreads_h1: 0.05, // 5% minimum for 1st half spreads
+  totals_h1: 0.05, // 5% minimum for 1st half totals
+};
+
 // Market making strategy: improve by 1 tick or jump to target?
 // "incremental" = improve current best by 1% (maximize fill probability)
 // "target" = use calculated target price (maximize margin)
 const MAKER_STRATEGY: "incremental" | "target" = "incremental";
+
+// ============================================================================
+// KELLY CRITERION & POSITION SIZING
+// ============================================================================
+
+// Kelly multiplier (0.5 = half Kelly, conservative but aggressive enough)
+const KELLY_MULTIPLIER = 0.5;
+
+// Position limits as fraction of bankroll
+const MAX_PER_MARKET_FRACTION = 0.03; // 2% of bankroll per market
+const MAX_PER_EVENT_FRACTION = 0.06; // 4% of bankroll per event
+
+// Bankroll (in USD) - this would come from wallet balance + position values in production
+// For now, we'll use a placeholder that can be updated
+const BANKROLL_USD = 1000;
+
+// Track positions per market and per event (for limit checking)
+// In production, this would be fetched from actual positions
+const currentPositions: {
+  byMarket: Map<string, number>; // marketSlug -> USD exposure
+  byEvent: Map<string, number>; // eventSlug -> USD exposure
+} = {
+  byMarket: new Map(),
+  byEvent: new Map(),
+};
 
 // Sport mapping: Polymarket -> Odds API
 const SPORT_MAP: Record<string, string> = {
@@ -404,6 +455,90 @@ function calculateEV(
   return (fairProbability - polymarketAsk) / fairProbability;
 }
 
+/**
+ * Calculate Kelly Criterion bet size
+ *
+ * Kelly formula for binary outcomes:
+ * f* = (p - q) / b = edge / (odds - 1)
+ *
+ * For Polymarket (prices are probabilities):
+ * f* = (fair_prob - price) / (1 - price)
+ *
+ * We use half Kelly (0.5 multiplier) for conservative sizing
+ */
+function calculateKellySize(
+  fairProb: number,
+  price: number,
+  bankroll: number,
+  marketSlug: string,
+  eventSlug: string,
+): {
+  edge: number;
+  kellyFraction: number;
+  rawKellySizeUSD: number;
+  rawKellyShares: number;
+  constrainedSizeUSD: number;
+  constrainedShares: number;
+  limitingFactor: string;
+  bankrollPct: number;
+} {
+  // Calculate edge
+  const edge = fairProb - price;
+
+  // Calculate Kelly fraction
+  const kellyFraction = edge / (1 - price);
+
+  // Apply half Kelly multiplier
+  const adjustedKelly = kellyFraction * KELLY_MULTIPLIER;
+
+  // Calculate raw Kelly size in USD
+  const rawKellySizeUSD = bankroll * adjustedKelly;
+  const rawKellyShares = rawKellySizeUSD / price;
+
+  // Calculate position limits
+  const maxPerMarket = bankroll * MAX_PER_MARKET_FRACTION;
+  const maxPerEvent = bankroll * MAX_PER_EVENT_FRACTION;
+
+  // Get current exposures
+  const currentMarketExposure = currentPositions.byMarket.get(marketSlug) || 0;
+  const currentEventExposure = currentPositions.byEvent.get(eventSlug) || 0;
+
+  // Calculate remaining room
+  const remainingMarketRoom = maxPerMarket - currentMarketExposure;
+  const remainingEventRoom = maxPerEvent - currentEventExposure;
+
+  // Find constraining factor
+  let constrainedSizeUSD = rawKellySizeUSD;
+  let limitingFactor = "kelly";
+
+  if (remainingMarketRoom < constrainedSizeUSD) {
+    constrainedSizeUSD = remainingMarketRoom;
+    limitingFactor = "market_limit";
+  }
+
+  if (remainingEventRoom < constrainedSizeUSD) {
+    constrainedSizeUSD = remainingEventRoom;
+    limitingFactor = "event_limit";
+  }
+
+  // Ensure non-negative
+  constrainedSizeUSD = Math.max(0, constrainedSizeUSD);
+
+  const constrainedShares = constrainedSizeUSD / price;
+  const bankrollPct = (constrainedSizeUSD / bankroll) * 100;
+
+  return {
+    edge,
+    kellyFraction: adjustedKelly,
+    rawKellySizeUSD,
+    rawKellyShares,
+    constrainedSizeUSD,
+    constrainedShares,
+    limitingFactor,
+    bankrollPct,
+  };
+}
+
 // ============================================================================
 // MATCHING LOGIC
 // ============================================================================
@@ -619,6 +754,16 @@ function getMarginRange(pm: PolymarketMarket): { min: number; max: number } {
 }
 
 /**
+ * Get taker minimum EV threshold for market type
+ */
+function getTakerMinimum(pm: PolymarketMarket): number {
+  const isFirstHalfMkt = isFirstHalfMarket(pm);
+  const marketTypeKey = isFirstHalfMkt ? `${pm.marketType}_h1` : pm.marketType;
+
+  return TAKER_MARGINS[marketTypeKey] || TAKER_MARGINS[pm.marketType] || 0.03;
+}
+
+/**
  * Round price to whole percentage points (0.01 increments)
  * Polymarket only allows prices like 0.24, 0.25, 0.26 (not 0.245)
  */
@@ -652,18 +797,24 @@ function calculateMakerEV(
     outcome1BidPrice: null,
     outcome1BidMargin: null,
     outcome1BidEV: null,
+    outcome1BidKelly: null,
     outcome1AskPrice: null,
     outcome1AskMargin: null,
     outcome1AskEV: null,
     outcome2BidPrice: null,
     outcome2BidMargin: null,
     outcome2BidEV: null,
+    outcome2BidKelly: null,
     outcome2AskPrice: null,
     outcome2AskMargin: null,
     outcome2AskEV: null,
     bestMakerEV: null,
     bestMakerSide: null,
   };
+
+  const marketSlug =
+    pm.marketSlug || pm.eventSlug || `${pm.eventTitle}-${pm.marketQuestion}`;
+  const eventSlug = pm.eventSlug || pm.eventTitle || "unknown";
 
   // Outcome 1: Calculate bid opportunity (buying at discount)
   // Target: fair - (fair × min_margin), then round DOWN to be conservative
@@ -709,6 +860,15 @@ function calculateMakerEV(
     match.makerEV.outcome1BidPrice = outcome1BidPrice;
     match.makerEV.outcome1BidMargin = outcome1BidMargin;
     match.makerEV.outcome1BidEV = outcome1BidEV;
+
+    // Calculate Kelly sizing for this bid
+    match.makerEV.outcome1BidKelly = calculateKellySize(
+      fairProb1,
+      outcome1BidPrice,
+      BANKROLL_USD,
+      `${marketSlug}-outcome1`,
+      eventSlug,
+    );
   }
 
   // NOTE: We don't calculate ASK opportunities for Outcome 1
@@ -753,6 +913,15 @@ function calculateMakerEV(
     match.makerEV.outcome2BidPrice = outcome2BidPrice;
     match.makerEV.outcome2BidMargin = outcome2BidMargin;
     match.makerEV.outcome2BidEV = outcome2BidEV;
+
+    // Calculate Kelly sizing for this bid
+    match.makerEV.outcome2BidKelly = calculateKellySize(
+      fairProb2,
+      outcome2BidPrice,
+      BANKROLL_USD,
+      `${marketSlug}-outcome2`,
+      eventSlug,
+    );
   }
 
   // NOTE: We don't calculate ASK opportunities for Outcome 2
@@ -902,11 +1071,51 @@ function calculateMarketEV(match: MatchedMarket): void {
     bestOutcome = pm.outcome2Name || "Outcome 2";
   }
 
+  // Calculate Kelly sizing for taker opportunities (only if meets minimum threshold)
+  const marketSlug =
+    pm.marketSlug || pm.eventSlug || `${pm.eventTitle}-${pm.marketQuestion}`;
+  const eventSlug = pm.eventSlug || pm.eventTitle || "unknown";
+  const takerMinimum = getTakerMinimum(pm);
+
+  let outcome1Kelly: KellySize | null = null;
+  let outcome2Kelly: KellySize | null = null;
+
+  // Only calculate Kelly if EV meets minimum threshold
+  if (
+    pm.bestAsk !== undefined &&
+    outcome1EV !== null &&
+    outcome1EV >= takerMinimum
+  ) {
+    outcome1Kelly = calculateKellySize(
+      consensus.consensus1,
+      pm.bestAsk,
+      BANKROLL_USD,
+      `${marketSlug}-outcome1`,
+      eventSlug,
+    );
+  }
+
+  if (
+    pm.outcome2Ask !== undefined &&
+    outcome2EV !== null &&
+    outcome2EV >= takerMinimum
+  ) {
+    outcome2Kelly = calculateKellySize(
+      consensus.consensus2,
+      pm.outcome2Ask,
+      BANKROLL_USD,
+      `${marketSlug}-outcome2`,
+      eventSlug,
+    );
+  }
+
   match.ev = {
     outcome1EV,
     outcome2EV,
     bestEV,
     bestOutcome,
+    outcome1Kelly,
+    outcome2Kelly,
   };
 
   // Also calculate maker EV
@@ -1074,52 +1283,62 @@ function displayMatches(matches: MatchedMarket[]) {
       console.log(`│`.padEnd(120) + "│");
     }
 
-    // Display TAKER EV
-    if (match.ev) {
+    // Display TAKER EV (only show opportunities that meet minimum threshold)
+    const takerMinimum = getTakerMinimum(pm);
+    const hasTakerOpportunity =
+      match.ev?.outcome1Kelly !== null || match.ev?.outcome2Kelly !== null;
+
+    if (match.ev && hasTakerOpportunity) {
+      const takerMinPct = (takerMinimum * 100).toFixed(0);
       console.log(
-        `│ TAKER EV (buy at ask, immediate execution):`.padEnd(120) + "│",
+        `│ TAKER EV (buy at ask, immediate execution, ${takerMinPct}%+ threshold):`.padEnd(
+          120,
+        ) + "│",
       );
 
-      if (match.ev.outcome1EV !== null) {
-        const ev1Pct = (match.ev.outcome1EV * 100).toFixed(2);
-        const ev1Sign = match.ev.outcome1EV >= 0 ? "+" : "";
-        const ev1Color =
-          match.ev.outcome1EV > 0
-            ? "🟢"
-            : match.ev.outcome1EV < -0.05
-              ? "🔴"
-              : "🟡";
+      // Only show outcome 1 if it has Kelly sizing (meets threshold)
+      if (match.ev.outcome1Kelly) {
+        const ev1Pct = (match.ev.outcome1EV! * 100).toFixed(2);
+        const ev1Sign = "+";
+        const ev1Color = match.ev.outcome1EV! > 0.05 ? "🎯" : "🟢";
+
+        const k = match.ev.outcome1Kelly;
+        const kellyInfo = ` | Kelly: $${k.constrainedSizeUSD.toFixed(0)} (${k.constrainedShares.toFixed(0)} shares, ${k.bankrollPct.toFixed(1)}%)`;
+
         console.log(
-          `│   ${(pm.outcome1Name || "Outcome 1").padEnd(30)} ${ev1Color} ${ev1Sign}${ev1Pct}%`.padEnd(
+          `│   ${(pm.outcome1Name || "Outcome 1").padEnd(30)} ${ev1Color} ${ev1Sign}${ev1Pct}%${kellyInfo}`.padEnd(
             120,
           ) + "│",
         );
       }
 
-      if (match.ev.outcome2EV !== null) {
-        const ev2Pct = (match.ev.outcome2EV * 100).toFixed(2);
-        const ev2Sign = match.ev.outcome2EV >= 0 ? "+" : "";
-        const ev2Color =
-          match.ev.outcome2EV > 0
-            ? "🟢"
-            : match.ev.outcome2EV < -0.05
-              ? "🔴"
-              : "🟡";
+      // Only show outcome 2 if it has Kelly sizing (meets threshold)
+      if (match.ev.outcome2Kelly) {
+        const ev2Pct = (match.ev.outcome2EV! * 100).toFixed(2);
+        const ev2Sign = "+";
+        const ev2Color = match.ev.outcome2EV! > 0.05 ? "🎯" : "🟢";
+
+        const k = match.ev.outcome2Kelly;
+        const kellyInfo = ` | Kelly: $${k.constrainedSizeUSD.toFixed(0)} (${k.constrainedShares.toFixed(0)} shares, ${k.bankrollPct.toFixed(1)}%)`;
+
         console.log(
-          `│   ${(pm.outcome2Name || "Outcome 2").padEnd(30)} ${ev2Color} ${ev2Sign}${ev2Pct}%`.padEnd(
+          `│   ${(pm.outcome2Name || "Outcome 2").padEnd(30)} ${ev2Color} ${ev2Sign}${ev2Pct}%${kellyInfo}`.padEnd(
             120,
           ) + "│",
         );
       }
 
-      if (match.ev.bestEV !== null && match.ev.bestOutcome) {
+      // Show best taker if there is one
+      if (
+        match.ev.bestEV !== null &&
+        match.ev.bestEV >= takerMinimum &&
+        match.ev.bestOutcome
+      ) {
         console.log(`│`.padEnd(120) + "│");
         const bestEvPct = (match.ev.bestEV * 100).toFixed(2);
-        const bestEvSign = match.ev.bestEV >= 0 ? "+" : "";
-        const bestEvEmoji =
-          match.ev.bestEV > 0.05 ? "🎯" : match.ev.bestEV > 0 ? "✅" : "⚠️";
+        const bestEvEmoji = match.ev.bestEV > 0.05 ? "🎯" : "✅";
         console.log(
-          `│   ${bestEvEmoji} BEST TAKER: ${match.ev.bestOutcome} at ${bestEvSign}${bestEvPct}% EV`.padEnd(
+          `│   ${bestEvEmoji} BEST TAKER: ${match.ev.bestOutcome} at +${bestEvPct}% EV`.padEnd(
             120,
           ) + "│",
         );
@@ -1147,8 +1366,15 @@ function displayMatches(matches: MatchedMarket[]) {
         const bidEV = (match.makerEV.outcome1BidEV * 100).toFixed(2);
         const currentBid =
           pm.bestBid !== undefined ? (pm.bestBid * 100).toFixed(1) : "N/A";
+
+        let kellyInfo = "";
+        if (match.makerEV.outcome1BidKelly) {
+          const k = match.makerEV.outcome1BidKelly;
+          kellyInfo = ` | Kelly: $${k.constrainedSizeUSD.toFixed(0)} (${k.constrainedShares.toFixed(0)} shares, ${k.bankrollPct.toFixed(1)}%)`;
+        }
+
         console.log(
-          `│   ${outcome1Label.padEnd(20)} BID @ ${bidPrice.padStart(5)}% (cur: ${currentBid.padStart(5)}%) → ${bidMargin.padStart(4)}% margin = +${bidEV}% EV`.padEnd(
+          `│   ${outcome1Label.padEnd(20)} BID @ ${bidPrice.padStart(5)}% (cur: ${currentBid.padStart(5)}%) → ${bidMargin.padStart(4)}% margin = +${bidEV}% EV${kellyInfo}`.padEnd(
             120,
           ) + "│",
         );
@@ -1164,8 +1390,15 @@ function displayMatches(matches: MatchedMarket[]) {
           pm.outcome2Bid !== undefined
             ? (pm.outcome2Bid * 100).toFixed(1)
             : "N/A";
+
+        let kellyInfo = "";
+        if (match.makerEV.outcome2BidKelly) {
+          const k = match.makerEV.outcome2BidKelly;
+          kellyInfo = ` | Kelly: $${k.constrainedSizeUSD.toFixed(0)} (${k.constrainedShares.toFixed(0)} shares, ${k.bankrollPct.toFixed(1)}%)`;
+        }
+
         console.log(
-          `│   ${outcome2Label.padEnd(20)} BID @ ${bidPrice.padStart(5)}% (cur: ${currentBid.padStart(5)}%) → ${bidMargin.padStart(4)}% margin = +${bidEV}% EV`.padEnd(
+          `│   ${outcome2Label.padEnd(20)} BID @ ${bidPrice.padStart(5)}% (cur: ${currentBid.padStart(5)}%) → ${bidMargin.padStart(4)}% margin = +${bidEV}% EV${kellyInfo}`.padEnd(
             120,
           ) + "│",
         );
@@ -1264,9 +1497,9 @@ function displayMatches(matches: MatchedMarket[]) {
   console.log(`   • Skipped: ${skipped.length}`);
   console.log(`   • Total: ${matches.length}`);
 
-  // TAKER EV breakdown
+  // TAKER EV breakdown (only count opportunities that meet minimum thresholds)
   const positiveTakerEV = matched.filter(
-    (m) => m.ev && m.ev.bestEV && m.ev.bestEV > 0,
+    (m) => m.ev && (m.ev.outcome1Kelly !== null || m.ev.outcome2Kelly !== null),
   );
   const strongTakerEV = matched.filter(
     (m) => m.ev && m.ev.bestEV && m.ev.bestEV > 0.05,
