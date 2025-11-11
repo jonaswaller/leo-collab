@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "start": "tsx src/index.ts",
-    "fetch-sports": "tsx scripts/fetch-upcoming-sports.ts"
+    "fetch-sports": "tsx scripts/fetch-upcoming-sports.ts",
+    "match-odds": "tsx scripts/match-odds.ts"
   },
   "keywords": [],
   "author": "",

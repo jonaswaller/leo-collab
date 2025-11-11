@@ -933,6 +933,23 @@ async function main() {
       });
 
     console.log("");
+
+    // Save to JSON file
+    const fs = await import("fs");
+    const outputData = {
+      timestamp: new Date().toISOString(),
+      markets: markets.map((m) => ({
+        ...m,
+        startTime: m.startTime.toISOString(),
+      })),
+    };
+    fs.writeFileSync(
+      "polymarket-markets.json",
+      JSON.stringify(outputData, null, 2),
+    );
+    console.log(
+      `💾 Saved ${markets.length} markets to polymarket-markets.json\n`,
+    );
   } catch (error: any) {
     console.error("\n❌ Error:", error.message);
     process.exit(1);
