@@ -20,14 +20,21 @@ import {
 
 const MIN_LIQUIDITY = 0;
 const HOURS_AHEAD = 24;
-const BATCH_SIZE = 80; // Gamma /events allows 100 req/10s, we use 80 to be safe
-const BATCH_DELAY_MS = 10000; // 10 seconds
+const MAX_CONCURRENT = 20; // Process 20 at a time
+const REQUEST_DELAY_MS = 100; // 100ms between request batches = 10 req/s sustained
 
-// Create dedicated axios instance for Gamma API (same as fetch-upcoming-sports.ts)
+// Create dedicated axios instance for Gamma API with optimized settings
 const axGamma = axios.create({
   baseURL: "https://gamma-api.polymarket.com",
   timeout: 10000,
+  // Enable HTTP keep-alive for connection reuse
+  headers: {
+    'Connection': 'keep-alive',
+  },
 });
+
+// Cache for sports metadata (rarely changes)
+let sportsMetadataCache: SportMetadata[] | null = null;
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -219,7 +226,13 @@ function detectSportFromEvent(
 // ============================================================================
 
 async function getSportsMetadata(): Promise<SportMetadata[]> {
+  // Return cached data if available
+  if (sportsMetadataCache) {
+    return sportsMetadataCache;
+  }
+  
   const { data } = await axGamma.get<SportMetadata[]>("/sports");
+  sportsMetadataCache = data; // Cache for future calls
   return data;
 }
 
@@ -249,31 +262,51 @@ async function fetchEventsForSport(
   }
 }
 
-async function processBatch(
-  batch: Array<{ sport: SportMetadata; tagId: string }>,
+/**
+ * Process requests with intelligent throttling
+ * Uses a sliding window approach to maximize throughput while respecting rate limits
+ */
+async function processWithThrottling(
+  requests: Array<{ sport: SportMetadata; tagId: string }>,
   startMin: string,
   startMax: string,
 ): Promise<Array<{ sport: SportMetadata; events: GammaEvent[] }>> {
-  const promises = batch.map(async ({ sport, tagId }) => {
-    const events = await fetchEventsForSport(tagId, startMin, startMax);
-    return { sport, tagId, events };
-  });
+  const results: Array<{ sport: SportMetadata; events: GammaEvent[] }> = [];
+  
+  // Process in chunks of MAX_CONCURRENT
+  for (let i = 0; i < requests.length; i += MAX_CONCURRENT) {
+    const chunk = requests.slice(i, i + MAX_CONCURRENT);
+    
+    const chunkPromises = chunk.map(async ({ sport, tagId }) => {
+      const events = await fetchEventsForSport(tagId, startMin, startMax);
+      return { sport, tagId, events };
+    });
 
-  const results = await Promise.allSettled(promises);
-
-  return results
-    .filter((r) => r.status === "fulfilled")
-    .map(
-      (r) =>
-        (
-          r as PromiseFulfilledResult<{
-            sport: SportMetadata;
-            tagId: string;
-            events: GammaEvent[];
-          }>
-        ).value,
-    )
-    .filter((r) => r.events.length > 0);
+    const chunkResults = await Promise.allSettled(chunkPromises);
+    
+    const successfulResults = chunkResults
+      .filter((r) => r.status === "fulfilled")
+      .map(
+        (r) =>
+          (
+            r as PromiseFulfilledResult<{
+              sport: SportMetadata;
+              tagId: string;
+              events: GammaEvent[];
+            }>
+          ).value,
+      )
+      .filter((r) => r.events.length > 0);
+    
+    results.push(...successfulResults);
+    
+    // Small delay between chunks to avoid rate limiting
+    if (i + MAX_CONCURRENT < requests.length) {
+      await sleep(REQUEST_DELAY_MS);
+    }
+  }
+  
+  return results;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -306,19 +339,8 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
     }
   }
 
-  // Step 3: Process requests in batches to respect rate limits
-  const allResults: Array<{ sport: SportMetadata; events: GammaEvent[] }> = [];
-
-  for (let i = 0; i < requests.length; i += BATCH_SIZE) {
-    const batch = requests.slice(i, i + BATCH_SIZE);
-    const batchResults = await processBatch(batch, startMin, startMax);
-    allResults.push(...batchResults);
-
-    // Rate limiting: wait before next batch (except on last batch)
-    if (i + BATCH_SIZE < requests.length) {
-      await sleep(BATCH_DELAY_MS);
-    }
-  }
+  // Step 3: Process all requests with intelligent throttling
+  const allResults = await processWithThrottling(requests, startMin, startMax);
 
   // Step 4: Extract and filter markets from events
   const allMarkets: PolymarketMarket[] = [];

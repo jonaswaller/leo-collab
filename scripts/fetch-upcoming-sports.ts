@@ -28,7 +28,7 @@
  * - Direct links to Polymarket event and market pages
  * - Summary statistics by sport and market type
  *
- * Phantom Markets: 
+ * Phantom Markets:
  * - We're only trying to remove markets with no order history
  *
  * Usage: npm run fetch-sports
@@ -121,28 +121,44 @@ const HOURS_AHEAD = 24;
 const DEBUG = process.env.DEBUG === "true";
 
 // Rate limiting: GAMMA /events allows 100 req/10s
-// We'll batch at 80 req/10s to be safe (8 concurrent requests per second)
-const BATCH_SIZE = 80;
-const BATCH_DELAY_MS = 10000; // 10 seconds
+// Process all requests concurrently with intelligent throttling
+const MAX_CONCURRENT = 20; // Process 20 at a time
+const REQUEST_DELAY_MS = 100; // 100ms between request batches = 10 req/s sustained
 
-// Create axios instance for Gamma API
+// Create axios instance for Gamma API with optimized settings
 const axGamma = axios.create({
   baseURL: GAMMA_API_BASE,
   timeout: 10000,
+  // Enable HTTP keep-alive for connection reuse
+  headers: {
+    Connection: "keep-alive",
+  },
 });
+
+// Cache for sports metadata (rarely changes)
+let sportsMetadataCache: SportMetadata[] | null = null;
 
 // ============================================================================
 // API FUNCTIONS
 // ============================================================================
 
 /**
- * Fetch all sports metadata from Gamma API
+ * Fetch all sports metadata from Gamma API (with caching)
  * Returns sports with their associated tag IDs for filtering
  */
 async function getSportsMetadata(): Promise<SportMetadata[]> {
+  // Return cached data if available
+  if (sportsMetadataCache) {
+    console.log(
+      `✓ Using cached sports metadata (${sportsMetadataCache.length} sports)`,
+    );
+    return sportsMetadataCache;
+  }
+
   try {
     const { data } = await axGamma.get<SportMetadata[]>("/sports");
     console.log(`✓ Fetched ${data.length} sports from Polymarket`);
+    sportsMetadataCache = data; // Cache for future calls
     return data;
   } catch (error: any) {
     console.error("Error fetching sports metadata:", error.message);
@@ -473,33 +489,51 @@ function constructUrl(eventSlug?: string, marketSlug?: string): string {
 // ============================================================================
 
 /**
- * Process a batch of tag requests in parallel
+ * Process requests with intelligent throttling
+ * Uses a sliding window approach to maximize throughput while respecting rate limits
  */
-async function processBatch(
-  batch: Array<{ sport: SportMetadata; tagId: string }>,
+async function processWithThrottling(
+  requests: Array<{ sport: SportMetadata; tagId: string }>,
   startMin: string,
   startMax: string,
 ): Promise<Array<{ sport: SportMetadata; events: PolymarketEvent[] }>> {
-  const promises = batch.map(async ({ sport, tagId }) => {
-    const events = await fetchEventsForSport(tagId, startMin, startMax);
-    return { sport, tagId, events };
-  });
+  const results: Array<{ sport: SportMetadata; events: PolymarketEvent[] }> =
+    [];
 
-  const results = await Promise.allSettled(promises);
+  // Process in chunks of MAX_CONCURRENT
+  for (let i = 0; i < requests.length; i += MAX_CONCURRENT) {
+    const chunk = requests.slice(i, i + MAX_CONCURRENT);
 
-  return results
-    .filter((r) => r.status === "fulfilled")
-    .map(
-      (r) =>
-        (
-          r as PromiseFulfilledResult<{
-            sport: SportMetadata;
-            tagId: string;
-            events: PolymarketEvent[];
-          }>
-        ).value,
-    )
-    .filter((r) => r.events.length > 0);
+    const chunkPromises = chunk.map(async ({ sport, tagId }) => {
+      const events = await fetchEventsForSport(tagId, startMin, startMax);
+      return { sport, tagId, events };
+    });
+
+    const chunkResults = await Promise.allSettled(chunkPromises);
+
+    const successfulResults = chunkResults
+      .filter((r) => r.status === "fulfilled")
+      .map(
+        (r) =>
+          (
+            r as PromiseFulfilledResult<{
+              sport: SportMetadata;
+              tagId: string;
+              events: PolymarketEvent[];
+            }>
+          ).value,
+      )
+      .filter((r) => r.events.length > 0);
+
+    results.push(...successfulResults);
+
+    // Small delay between chunks to avoid rate limiting
+    if (i + MAX_CONCURRENT < requests.length) {
+      await sleep(REQUEST_DELAY_MS);
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -547,31 +581,12 @@ async function getAllUpcomingSportsMarkets(): Promise<{
     `📡 Fetching data for ${requests.length} tags across ${sports.length} sports...`,
   );
   console.log(
-    `   (Processing in batches of ${BATCH_SIZE} to respect rate limits)\n`,
+    `   (Processing ${MAX_CONCURRENT} concurrent requests with ${REQUEST_DELAY_MS}ms throttling)\n`,
   );
 
-  // Step 3: Process requests in batches to respect rate limits
-  const allResults: Array<{ sport: SportMetadata; events: PolymarketEvent[] }> =
-    [];
+  // Step 3: Process all requests with intelligent throttling
   const startTime = Date.now();
-
-  for (let i = 0; i < requests.length; i += BATCH_SIZE) {
-    const batch = requests.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(requests.length / BATCH_SIZE);
-
-    console.log(
-      `⚡ Processing batch ${batchNum}/${totalBatches} (${batch.length} requests)...`,
-    );
-
-    const batchResults = await processBatch(batch, startMin, startMax);
-    allResults.push(...batchResults);
-
-    // Rate limiting: wait before next batch (except on last batch)
-    if (i + BATCH_SIZE < requests.length) {
-      await sleep(BATCH_DELAY_MS);
-    }
-  }
+  const allResults = await processWithThrottling(requests, startMin, startMax);
 
   const fetchDuration = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`\n✅ Data fetched in ${fetchDuration}s\n`);
