@@ -469,6 +469,11 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
         const { homeTeam, awayTeam } = parseTeamNames(eventTitle);
         const marketType = detectMarketType(marketQuestion);
 
+        // Skip team totals (we don't want to analyze these)
+        if (marketQuestion.toLowerCase().includes("team total")) {
+          continue;
+        }
+
         const polymarketMarket: PolymarketMarket = {
           sport: actualSport,
           eventTitle,

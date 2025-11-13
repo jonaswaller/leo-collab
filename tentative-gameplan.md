@@ -24,7 +24,8 @@ Gamma /markets: 125 req/10s
 CLOB POST /order: 240/s burst, 40/s sustained
 CLOB DELETE /order: 240/s burst, 40/s sustained
 THE REFINED GAMEPLAN
-PHASE 1: Market Metadata Enhancement (Day 1)
+
+### PHASE 1: Market Metadata Enhancement (Day 1)
 1. Upgrade Discovery Module
 
 Modify discovery.ts to capture from Gamma API:
@@ -35,13 +36,14 @@ orderMinSize (minimum order size)
 condition_id (for CLOB operations)
 Add these fields to PolymarketMarket type in types.ts
 This is a prerequisite for everything else - can't trade without token IDs
-2. Add Market Slug Fetcher (for individual market updates)
+2. Add Market Slug Fetcher (for individual market updates) (HOLD OFF UNTIL PHASE 4)
 
 When you need fresh data on a specific market (e.g., to check if your order is still +EV):
 Use GET /markets/slug/{slug} instead of fetching all events
 Much faster and cheaper on rate limits
 Returns same data structure with updated prices
-PHASE 2: CLOB Client Setup (Day 2)
+
+### PHASE 2: CLOB Client Setup (Day 2)
 3. Initialize CLOB Client
 
 Use @polymarket/clob-client package (already in your package.json)
