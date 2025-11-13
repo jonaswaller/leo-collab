@@ -10,7 +10,7 @@ export type MarketType =
   | "h2h"
   | "spreads"
   | "totals"
-  | "player_props"
+  | "player_props" // PM WON'T RETURN THIS RN BECAUSE DOESN'T EXIST
   | "other";
 
 export interface PolymarketMarket {

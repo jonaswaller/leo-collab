@@ -396,7 +396,33 @@ function detectSportFromEvent(
   event: PolymarketEvent,
   fallbackSport: string,
 ): string {
-  // Use category if available (most reliable)
+  // PRIORITY 1: Check event slug for sport indicators (most reliable for international competitions)
+  if (event.slug) {
+    const slug = event.slug.toLowerCase();
+
+    // FIFA World Cup Qualifiers (various prefixes)
+    if (
+      slug.includes("uef-") ||
+      slug.includes("uefa-") ||
+      slug.startsWith("fif-")
+    ) {
+      return "wcq_europe"; // UEFA/FIFA World Cup Qualifiers - Europe
+    }
+    if (slug.includes("conmebol-") || slug.includes("wcq-sa")) {
+      return "wcq_south_america"; // CONMEBOL World Cup Qualifiers
+    }
+
+    // CONCACAF competitions (cof- prefix or concacaf/cnl in slug)
+    if (
+      slug.startsWith("cof-") ||
+      slug.includes("concacaf-") ||
+      slug.includes("cnl-")
+    ) {
+      return "concacaf"; // CONCACAF Nations League / Gold Cup
+    }
+  }
+
+  // PRIORITY 2: Use category if available
   if (event.category) {
     const cat = event.category.toLowerCase();
     // Map categories to sport codes
@@ -766,6 +792,9 @@ async function getAllUpcomingSportsMarkets(): Promise<{
     "arg",
     "ucl",
     "uel",
+    "wcq_europe", // FIFA World Cup Qualifiers - Europe (UEFA)
+    "wcq_south_america", // FIFA World Cup Qualifiers - South America (CONMEBOL)
+    "concacaf", // CONCACAF Nations League
     "ipl",
     "odi",
     "t20",

@@ -29,7 +29,7 @@ const axGamma = axios.create({
   timeout: 10000,
   // Enable HTTP keep-alive for connection reuse
   headers: {
-    'Connection': 'keep-alive',
+    Connection: "keep-alive",
   },
 });
 
@@ -167,6 +167,33 @@ function detectSportFromEvent(
   event: GammaEvent,
   fallbackSport: string,
 ): string {
+  // PRIORITY 1: Check event slug for sport indicators (most reliable for international competitions)
+  if (event.slug) {
+    const slug = event.slug.toLowerCase();
+
+    // FIFA World Cup Qualifiers (various prefixes)
+    if (
+      slug.includes("uef-") ||
+      slug.includes("uefa-") ||
+      slug.startsWith("fif-")
+    ) {
+      return "wcq_europe"; // UEFA/FIFA World Cup Qualifiers - Europe
+    }
+    if (slug.includes("conmebol-") || slug.includes("wcq-sa")) {
+      return "wcq_south_america"; // CONMEBOL World Cup Qualifiers
+    }
+
+    // CONCACAF competitions (cof- prefix or concacaf/cnl in slug)
+    if (
+      slug.startsWith("cof-") ||
+      slug.includes("concacaf-") ||
+      slug.includes("cnl-")
+    ) {
+      return "concacaf"; // CONCACAF Nations League / Gold Cup
+    }
+  }
+
+  // PRIORITY 2: Use category if available
   if (event.category) {
     const cat = event.category.toLowerCase();
     if (cat.includes("hockey") || cat.includes("nhl")) return "nhl";
@@ -230,7 +257,7 @@ async function getSportsMetadata(): Promise<SportMetadata[]> {
   if (sportsMetadataCache) {
     return sportsMetadataCache;
   }
-  
+
   const { data } = await axGamma.get<SportMetadata[]>("/sports");
   sportsMetadataCache = data; // Cache for future calls
   return data;
@@ -272,18 +299,18 @@ async function processWithThrottling(
   startMax: string,
 ): Promise<Array<{ sport: SportMetadata; events: GammaEvent[] }>> {
   const results: Array<{ sport: SportMetadata; events: GammaEvent[] }> = [];
-  
+
   // Process in chunks of MAX_CONCURRENT
   for (let i = 0; i < requests.length; i += MAX_CONCURRENT) {
     const chunk = requests.slice(i, i + MAX_CONCURRENT);
-    
+
     const chunkPromises = chunk.map(async ({ sport, tagId }) => {
       const events = await fetchEventsForSport(tagId, startMin, startMax);
       return { sport, tagId, events };
     });
 
     const chunkResults = await Promise.allSettled(chunkPromises);
-    
+
     const successfulResults = chunkResults
       .filter((r) => r.status === "fulfilled")
       .map(
@@ -297,15 +324,15 @@ async function processWithThrottling(
           ).value,
       )
       .filter((r) => r.events.length > 0);
-    
+
     results.push(...successfulResults);
-    
+
     // Small delay between chunks to avoid rate limiting
     if (i + MAX_CONCURRENT < requests.length) {
       await sleep(REQUEST_DELAY_MS);
     }
   }
-  
+
   return results;
 }
 
@@ -364,6 +391,9 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
     "arg",
     "ucl",
     "uel",
+    "wcq_europe", // FIFA World Cup Qualifiers - Europe (UEFA)
+    "wcq_south_america", // FIFA World Cup Qualifiers - South America (CONMEBOL)
+    "concacaf", // CONCACAF Nations League
     "ipl",
     "odi",
     "t20",

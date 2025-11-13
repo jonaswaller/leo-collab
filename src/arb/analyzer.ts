@@ -146,7 +146,18 @@ function calculateMarketEV(match: MatchedMarket): void {
     }
   }
 
-  const consensus = calculateWeightedConsensus(bookmakerOdds);
+  // Determine market type for proper de-vigging method selection
+  const marketTypeForDevig =
+    pm.marketType === "h2h"
+      ? "h2h"
+      : pm.marketType === "spreads"
+        ? "spreads"
+        : "totals";
+
+  const consensus = calculateWeightedConsensus(
+    bookmakerOdds,
+    marketTypeForDevig,
+  );
   if (!consensus) return;
 
   // Calculate taker EV

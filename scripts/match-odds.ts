@@ -1,3 +1,4 @@
+// # NOTE: THIS SCRIPT IS NOW OUTDATED. WE'RE USING A MORE ADVANCED DE-VIG METHODOLOGY IN /arb
 /**
  * Sportsbook Odds Matcher for Arbitrage Detection
  *
@@ -34,6 +35,7 @@
  *
  * Usage: npm run match-odds
  */
+// # NOTE: THIS SCRIPT IS NOW OUTDATED. WE'RE USING A MORE ADVANCED DE-VIG METHODOLOGY IN /arb
 
 import axios from "axios";
 import fs from "fs";
@@ -231,6 +233,9 @@ const SPORT_MAP: Record<string, string> = {
   mex: "soccer_mexico_ligamx",
   ucl: "soccer_uefa_champs_league",
   uel: "soccer_uefa_europa_league",
+  wcq_europe: "soccer_fifa_world_cup_qualifiers_europe", // FIFA WCQ - UEFA
+  wcq_south_america: "soccer_fifa_world_cup_qualifiers_south_america", // FIFA WCQ - CONMEBOL
+  concacaf: "soccer_concacaf_gold_cup", // CONCACAF competitions
   mma: "mma_mixed_martial_arts",
 };
 

@@ -146,6 +146,30 @@ async function main() {
       });
   }
 
+  // Show de-vigging method info
+  console.log("\n\n📐 DE-VIGGING METHODS:");
+  console.log(
+    "   • Moneylines (H2H): Power/Shin method (corrects favorite-longshot bias)",
+  );
+  console.log("   • Spreads: Probit method (symmetric 2-way markets)");
+  console.log("   • Totals: Probit method (symmetric 2-way markets)");
+  console.log("   • 3-way markets: Power method (home/draw/away)");
+
+  console.log("\n\n⚖️  BOOKMAKER WEIGHTS:");
+  console.log("   Tier 1 (Sharp books - 80%):");
+  console.log("     • Pinnacle: 40%");
+  console.log("     • BetOnline: 20%");
+  console.log("     • BetAnySports: 10%");
+  console.log("     • LowVig: 10%");
+  console.log("   Tier 2 (Euro/Regional - 15%):");
+  console.log("     • Marathon Bet: 5%");
+  console.log("     • Unibet (combined): 5%");
+  console.log("     • 888sport: 5%");
+  console.log("   Tier 3 (US Recreational - 5%):");
+  console.log("     • DraftKings: 2%");
+  console.log("     • FanDuel: 2%");
+  console.log("     • BetMGM/Caesars: 1%");
+
   console.log("\n\n✅ Full pipeline test complete!\n");
 }
 

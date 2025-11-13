@@ -16,14 +16,61 @@ export const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 // BOOKMAKER CONFIGURATION
 // ============================================================================
 
-export const BOOKMAKERS = ["pinnacle", "betonlineag", "draftkings", "fanduel"];
+// Bookmakers to fetch odds from (expanded list for better coverage)
+export const BOOKMAKERS = [
+  // Tier 1: Sharp books
+  "pinnacle",
+  "betonlineag",
+  "betanysports",
+  "lowvig",
+  // Tier 2: Euro/regional books
+  "marathonbet",
+  "unibet_uk",
+  "unibet_fr",
+  "unibet_it",
+  "unibet_nl",
+  "unibet_se",
+  "sport888",
+  // Tier 3: US recreational books
+  "draftkings",
+  "fanduel",
+  "betmgm",
+  "williamhill_us",
+];
 
-// Bookmaker weights for consensus odds calculation (must sum to 1.0)
+/**
+ * Brand-level bookmaker weights for consensus calculation
+ *
+ * Tier 1 (0.80): Sharp/reduced-juice books with best price discovery
+ * Tier 2 (0.15): Solid Euro/regional books
+ * Tier 3 (0.05): US recreational books (for market coverage)
+ *
+ * Weights are brand-level, not region-level. Multiple region codes
+ * (e.g., us.betonlineag, eu.betonlineag) map to the same brand weight.
+ *
+ * Total must sum to 1.0 for proper weighted averaging.
+ */
 export const BOOKMAKER_WEIGHTS: Record<string, number> = {
-  pinnacle: 0.5,
-  betonlineag: 0.1,
-  draftkings: 0.2,
-  fanduel: 0.2,
+  // Tier 1: Core sharp books (0.80 total)
+  pinnacle: 0.4, // Gold standard for sharp lines
+  betonlineag: 0.2, // Reduced juice, sharp
+  betanysports: 0.1, // Sharp, good limits
+  lowvig: 0.1, // Low vig specialist
+
+  // Tier 2: Euro/regional books (0.15 total)
+  marathonbet: 0.05, // Sharp European book
+  unibet_uk: 0.0125, // Combined Unibet weight: 0.05 total
+  unibet_fr: 0.0125,
+  unibet_it: 0.0125,
+  unibet_nl: 0.0125,
+  unibet_se: 0.0,
+  sport888: 0.05, // Solid UK book
+
+  // Tier 3: US recreational books (0.05 total)
+  draftkings: 0.02, // Market coverage
+  fanduel: 0.02, // Market coverage
+  betmgm: 0.005, // Caesars/William Hill US
+  williamhill_us: 0.005,
 };
 
 // ============================================================================
@@ -49,6 +96,9 @@ export const SPORT_MAP: Record<string, string> = {
   mex: "soccer_mexico_ligamx",
   ucl: "soccer_uefa_champs_league",
   uel: "soccer_uefa_europa_league",
+  wcq_europe: "soccer_fifa_world_cup_qualifiers_europe", // FIFA WCQ - UEFA
+  wcq_south_america: "soccer_fifa_world_cup_qualifiers_south_america", // FIFA WCQ - CONMEBOL
+  concacaf: "soccer_concacaf_gold_cup", // CONCACAF competitions
   mma: "mma_mixed_martial_arts",
 };
 

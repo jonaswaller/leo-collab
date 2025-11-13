@@ -1,5 +1,3 @@
-# For Odds API
-
 Bookmakers
 Bookmakers are segmented by region, which can be specified in an API request or in the add-on for Excel and Google Sheets. Regions include:
 
@@ -45,3 +43,86 @@ Region key Bookmaker key Bookmaker Note
 us_ex betopenly BetOpenly (opens new window) Use the "includeBetLimits" parameter to find open bets
 us_ex novig Novig (opens new window)
 us_ex prophetx ProphetX (opens new window)
+
+#UK Bookmakers
+The API lists odds from the following UK bookmakers:
+
+Region key Bookmaker key Bookmaker
+uk sport888 888sport (opens new window)
+uk betfair_ex_uk Betfair Exchange (opens new window)
+uk betfair_sb_uk Betfair Sportsbook (opens new window)
+uk betvictor Bet Victor (opens new window)
+uk betway Betway (opens new window)
+uk boylesports BoyleSports (opens new window)
+uk casumo Casumo (opens new window)
+uk coral Coral (opens new window)
+uk grosvenor Grosvenor (opens new window)
+uk ladbrokes_uk Ladbrokes (opens new window)
+uk leovegas LeoVegas (opens new window)
+uk livescorebet LiveScore Bet (opens new window)
+uk matchbook Matchbook (opens new window)
+uk paddypower Paddy Power (opens new window)
+uk skybet Sky Bet (opens new window)
+uk smarkets Smarkets (opens new window)
+uk unibet_uk Unibet (opens new window)
+uk virginbet Virgin Bet (opens new window)
+uk williamhill William Hill (UK) (opens new window)
+
+#EU Bookmakers
+The API lists odds from the following EU bookmakers:
+
+Region key Bookmaker key Bookmaker Note
+eu onexbet 1xBet (opens new window)
+eu sport888 888sport (opens new window)
+eu betclic_fr Betclic (FR) (opens new window)
+eu betanysports BetAnySports (opens new window)
+eu betfair_ex_eu Betfair Exchange (opens new window)
+eu betonlineag BetOnline.ag (opens new window)
+eu betsson Betsson (opens new window)
+eu betvictor Bet Victor (opens new window)
+eu coolbet Coolbet (opens new window)
+eu everygame Everygame (opens new window)
+eu gtbets GTbets (opens new window)
+eu leovegas_se LeoVegas (SE) (opens new window)
+eu marathonbet Marathon Bet (opens new window)
+eu matchbook Matchbook (opens new window)
+eu mybookieag MyBookie.ag (opens new window)
+eu nordicbet NordicBet (opens new window)
+eu parionssport_fr Parions Sport (FR) (opens new window)
+eu pinnacle Pinnacle (opens new window) Odds are from public website which may incur a delay
+eu suprabets Suprabets (opens new window)
+eu tipico_de Tipico (DE) (opens new window)
+eu unibet_fr Unibet (FR) (opens new window)
+eu unibet_it Unibet (IT) (opens new window)
+eu unibet_nl Unibet (NL) (opens new window)
+eu unibet_se Unibet (SE) (opens new window)
+eu williamhill William Hill (opens new window)
+eu winamax_de Winamax (DE) (opens new window)
+eu winamax_fr Winamax (FR) (opens new window)
+
+#AU Bookmakers
+The API lists odds from the following AU bookmakers:
+
+Region key Bookmaker key Bookmaker Note
+au betfair_ex_au Betfair Exchange (opens new window)
+au betr_au Betr (opens new window)
+au betright Bet Right (opens new window)
+au bet365_au Bet365 AU (opens new window) Only available on paid subscriptions. Coverage currently limited to h2h, spreads and totals for AFL and NRL
+au boombet BoomBet (opens new window)
+au dabble_au Dabble AU (opens new window) Only available on paid subscriptions
+au ladbrokes_au Ladbrokes (opens new window)
+au neds Neds (opens new window)
+au playup PlayUp (opens new window)
+au pointsbetau PointsBet (AU) (opens new window)
+au sportsbet SportsBet (opens new window)
+au tab TAB (opens new window)
+au tabtouch TABtouch (opens new window)
+au unibet Unibet (opens new window)
+
+#Notes
+Some bookmakers may not list for less popular sports.
+Discover the bookmakers, sports and markets we cover by getting a free API key
+
+Occasionally a bookmaker might disappear from the API response. This can happen for a number of reasons, for example, their site might be down for maintenance or they may have changed their site. These situations are usually resolved within a few hours to a few days.
+
+We occasionally make the difficult decision to delist a bookmaker. This can be due to difficulties in maintaining their listing, or if the bookmaker removes their odds from public view. These situations are rare.
