@@ -1,7 +1,7 @@
 # Tentative Gameplan
-#### Everything here is up for debate / change if you give me a better solution, but the following is pretty well thought out
-#### Ignore /scrips folder
-#### A masterful understanding of polymarket-api-docs (see folder in my root) is crucial for this implementation. Anytime you are not 100% sure about something Polymarket-related, ask me or consult the files in that folder.
+## Everything here is up for debate / change if you give me a better solution, but the following is pretty well thought out
+## Ignore /scrips folder
+## A masterful understanding of polymarket-api-docs (see folder in my root) is crucial for this implementation. Anytime you are not 100% sure about something Polymarket-related, ask me or consult the files in that folder.
 # IMPORTANT NOTE: For each of these steps you implement, we'll want to CHECK OUR WORK.
 
 KEY POLYMARKET API INSIGHTS
