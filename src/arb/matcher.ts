@@ -165,10 +165,26 @@ function matchMarket(
         }
       }
     } else {
-      // For h2h, just find any matching market
+      // For h2h, find a 2-way market (exclude 3-way markets with Draw)
+      // Some European bookmakers return 3-way markets under the h2h key
+      // For NHL, European books offer 3-way "regulation time" markets which are
+      // fundamentally different from 2-way "including OT/shootout" markets
       for (const marketKey of possibleMarketKeys) {
-        oddsMarket = bookmaker.markets.find((m) => m.key === marketKey);
-        if (oddsMarket) break;
+        const market = bookmaker.markets.find((m) => m.key === marketKey);
+        if (!market) continue;
+        
+        // Filter out 3-way markets:
+        // 1. Must have exactly 2 outcomes
+        // 2. Must NOT have a "Draw" outcome
+        const hasDrawOutcome = market.outcomes.some(
+          (outcome) => outcome.name.toLowerCase() === "draw" || 
+                       outcome.name.toLowerCase() === "tie"
+        );
+        
+        if (market.outcomes.length === 2 && !hasDrawOutcome) {
+          oddsMarket = market;
+          break;
+        }
       }
     }
 

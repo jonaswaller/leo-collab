@@ -93,14 +93,23 @@ async function main() {
       .slice(0, 5)
       .forEach((opp, i) => {
         const evPct = (opp.ev * 100).toFixed(2);
+        const fairProb = (opp.fairProb * 100).toFixed(2);
+        const polyAsk = (opp.polymarketAsk * 100).toFixed(2);
         const kellyUSD = opp.kellySize.constrainedSizeUSD.toFixed(0);
         const kellyShares = opp.kellySize.constrainedShares.toFixed(0);
+        
+        // Determine which market type for display
+        const marketTypeDisplay = opp.marketQuestion.toLowerCase().includes("spread") ? "spreads" :
+                                   opp.marketQuestion.toLowerCase().includes("o/u") || 
+                                   opp.marketQuestion.toLowerCase().includes("total") ? "totals" : "h2h";
+        
         console.log(
           `\n   ${i + 1}. ${opp.sport.toUpperCase()} - ${opp.eventTitle}`,
         );
         console.log(`      ${opp.marketQuestion}`);
         console.log(`      ${opp.outcomeName}: +${evPct}% EV`);
-        console.log(`      Kelly: $${kellyUSD} (${kellyShares} shares)`);
+        console.log(`      True Prob: ${fairProb}% | Polymarket Ask: ${polyAsk}%`);
+        console.log(`      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | Kelly: $${kellyUSD} (${kellyShares} shares)`);
       });
   }
 
@@ -126,12 +135,18 @@ async function main() {
       .slice(0, 10)
       .forEach((opp, i) => {
         const evPct = (opp.ev * 100).toFixed(2);
+        const fairProb = (opp.fairProb * 100).toFixed(2);
         const marginPct = (opp.margin * 100).toFixed(1);
         const targetPrice = (opp.targetPrice * 100).toFixed(1);
         const currentBid = opp.currentBid
           ? (opp.currentBid * 100).toFixed(1)
           : "N/A";
         const kellyUSD = opp.kellySize.constrainedSizeUSD.toFixed(0);
+        
+        // Determine which market type for display
+        const marketTypeDisplay = opp.marketQuestion.toLowerCase().includes("spread") ? "spreads" :
+                                   opp.marketQuestion.toLowerCase().includes("o/u") || 
+                                   opp.marketQuestion.toLowerCase().includes("total") ? "totals" : "h2h";
 
         console.log(
           `\n   ${i + 1}. ${opp.sport.toUpperCase()} - ${opp.eventTitle}`,
@@ -140,9 +155,8 @@ async function main() {
         console.log(
           `      ${opp.outcomeName} BID @ ${targetPrice}% (cur: ${currentBid}%)`,
         );
-        console.log(
-          `      Margin: ${marginPct}% | EV: +${evPct}% | Kelly: $${kellyUSD}`,
-        );
+        console.log(`      True Prob: ${fairProb}% | Margin: ${marginPct}%`);
+        console.log(`      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | EV: +${evPct}% | Kelly: $${kellyUSD}`);
       });
   }
 
