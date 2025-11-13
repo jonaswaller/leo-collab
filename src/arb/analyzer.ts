@@ -419,6 +419,21 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
 
     const pm = match.polymarket;
 
+    // Skip if missing critical CLOB metadata
+    if (!pm.clobTokenIds || pm.clobTokenIds.length < 2) {
+      console.warn(
+        `[Analyzer] Skipping market ${pm.marketSlug} - missing clobTokenIds`,
+      );
+      continue;
+    }
+
+    if (!pm.conditionId) {
+      console.warn(
+        `[Analyzer] Skipping market ${pm.marketSlug} - missing conditionId`,
+      );
+      continue;
+    }
+
     // Outcome 1 taker opportunity
     if (match.ev.outcome1Kelly && pm.bestAsk !== undefined) {
       takers.push({
@@ -432,13 +447,15 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
         sport: pm.sport,
         outcome: 1,
         outcomeName: pm.outcome1Name || "Outcome 1",
-        tokenId: "", // TODO: Need to get from CLOB API
+        tokenId: pm.clobTokenIds[0]!, // First token ID is outcome 1
+        conditionId: pm.conditionId,
         fairProb: match.ev.outcome1Kelly.edge + pm.bestAsk,
         polymarketAsk: pm.bestAsk,
         ev: match.ev.outcome1EV!,
         kellySize: match.ev.outcome1Kelly,
-        tickSize: 0.001, // TODO: Get from CLOB API
-        negRisk: false, // TODO: Get from CLOB API
+        tickSize: pm.tickSize || 0.001, // Default to 0.001 if not provided
+        minOrderSize: pm.minOrderSize || 5, // Default to 5 shares if not provided
+        negRisk: pm.negRisk || false,
       });
     }
 
@@ -455,13 +472,15 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
         sport: pm.sport,
         outcome: 2,
         outcomeName: pm.outcome2Name || "Outcome 2",
-        tokenId: "", // TODO: Need to get from CLOB API
+        tokenId: pm.clobTokenIds[1]!, // Second token ID is outcome 2
+        conditionId: pm.conditionId,
         fairProb: match.ev.outcome2Kelly.edge + pm.outcome2Ask,
         polymarketAsk: pm.outcome2Ask,
         ev: match.ev.outcome2EV!,
         kellySize: match.ev.outcome2Kelly,
-        tickSize: 0.001, // TODO: Get from CLOB API
-        negRisk: false, // TODO: Get from CLOB API
+        tickSize: pm.tickSize || 0.001,
+        minOrderSize: pm.minOrderSize || 5,
+        negRisk: pm.negRisk || false,
       });
     }
   }
@@ -473,6 +492,15 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
     if (!match.makerEV) continue;
 
     const pm = match.polymarket;
+
+    // Skip if missing critical CLOB metadata
+    if (!pm.clobTokenIds || pm.clobTokenIds.length < 2) {
+      continue; // Already warned in taker section
+    }
+
+    if (!pm.conditionId) {
+      continue; // Already warned in taker section
+    }
 
     // Outcome 1 maker opportunity
     if (
@@ -490,7 +518,8 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
         sport: pm.sport,
         outcome: 1,
         outcomeName: pm.outcome1Name || "Outcome 1",
-        tokenId: "", // TODO: Need to get from CLOB API
+        tokenId: pm.clobTokenIds[0]!, // First token ID is outcome 1
+        conditionId: pm.conditionId,
         fairProb:
           match.makerEV.outcome1BidKelly.edge + match.makerEV.outcome1BidPrice,
         targetPrice: match.makerEV.outcome1BidPrice,
@@ -498,8 +527,9 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
         margin: match.makerEV.outcome1BidMargin!,
         ev: match.makerEV.outcome1BidEV!,
         kellySize: match.makerEV.outcome1BidKelly,
-        tickSize: 0.001, // TODO: Get from CLOB API
-        negRisk: false, // TODO: Get from CLOB API
+        tickSize: pm.tickSize || 0.001,
+        minOrderSize: pm.minOrderSize || 5,
+        negRisk: pm.negRisk || false,
       });
     }
 
@@ -519,7 +549,8 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
         sport: pm.sport,
         outcome: 2,
         outcomeName: pm.outcome2Name || "Outcome 2",
-        tokenId: "", // TODO: Need to get from CLOB API
+        tokenId: pm.clobTokenIds[1]!, // Second token ID is outcome 2
+        conditionId: pm.conditionId,
         fairProb:
           match.makerEV.outcome2BidKelly.edge + match.makerEV.outcome2BidPrice,
         targetPrice: match.makerEV.outcome2BidPrice,
@@ -527,8 +558,9 @@ export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
         margin: match.makerEV.outcome2BidMargin!,
         ev: match.makerEV.outcome2BidEV!,
         kellySize: match.makerEV.outcome2BidKelly,
-        tickSize: 0.001, // TODO: Get from CLOB API
-        negRisk: false, // TODO: Get from CLOB API
+        tickSize: pm.tickSize || 0.001,
+        minOrderSize: pm.minOrderSize || 5,
+        negRisk: pm.negRisk || false,
       });
     }
   }

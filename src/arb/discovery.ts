@@ -522,6 +522,48 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           polymarketMarket.outcome2Ask = 1 - polymarketMarket.bestBid;
         }
 
+        // Extract CLOB trading metadata (CRITICAL for order execution)
+        // Parse clobTokenIds from stringified JSON array
+        if (market.clobTokenIds) {
+          try {
+            const tokenIds = JSON.parse(market.clobTokenIds);
+            if (Array.isArray(tokenIds) && tokenIds.length >= 2) {
+              polymarketMarket.clobTokenIds = tokenIds;
+            }
+          } catch (error) {
+            // If parsing fails, log warning but continue
+            console.warn(
+              `[Discovery] Failed to parse clobTokenIds for market ${market.slug}: ${market.clobTokenIds}`,
+            );
+          }
+        }
+
+        // Add condition ID (required for some CLOB operations)
+        if (market.conditionId) {
+          polymarketMarket.conditionId = market.conditionId;
+        }
+
+        // Add neg-risk status (affects order execution)
+        if (market.negRisk !== null && market.negRisk !== undefined) {
+          polymarketMarket.negRisk = market.negRisk;
+        }
+
+        // Add tick size (minimum price increment)
+        if (
+          market.orderPriceMinTickSize !== null &&
+          market.orderPriceMinTickSize !== undefined
+        ) {
+          polymarketMarket.tickSize = market.orderPriceMinTickSize;
+        }
+
+        // Add minimum order size (minimum shares per order)
+        if (
+          market.orderMinSize !== null &&
+          market.orderMinSize !== undefined
+        ) {
+          polymarketMarket.minOrderSize = market.orderMinSize;
+        }
+
         allMarkets.push(polymarketMarket);
       }
     }

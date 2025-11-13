@@ -31,6 +31,12 @@ export interface PolymarketMarket {
   outcome2Ask?: number;
   eventSlug?: string;
   marketSlug?: string;
+  // CLOB Trading Metadata (required for order execution)
+  clobTokenIds?: string[]; // Array of token IDs, e.g., ["123", "456"]
+  conditionId?: string; // Condition ID for CLOB operations
+  negRisk?: boolean; // Whether this is a neg-risk market
+  tickSize?: number; // Minimum price increment (e.g., 0.001)
+  minOrderSize?: number; // Minimum shares per order (e.g., 5)
 }
 
 // ============================================================================
@@ -79,6 +85,12 @@ export interface GammaMarket {
   bestBid?: number | null;
   bestAsk?: number | null;
   spread?: number | null;
+  // CLOB Trading Metadata
+  clobTokenIds?: string | null; // Stringified JSON array, e.g., "[\"123\",\"456\"]"
+  conditionId?: string | null;
+  negRisk?: boolean | null;
+  orderPriceMinTickSize?: number | null;
+  orderMinSize?: number | null;
 }
 
 // ============================================================================
@@ -178,12 +190,14 @@ export interface TakerOpportunity {
   sport: string;
   outcome: 1 | 2;
   outcomeName: string;
-  tokenId: string;
+  tokenId: string; // CLOB token ID for this outcome
+  conditionId: string; // CLOB condition ID
   fairProb: number;
   polymarketAsk: number;
   ev: number;
   kellySize: KellySize;
   tickSize: number;
+  minOrderSize: number;
   negRisk: boolean;
 }
 
@@ -195,7 +209,8 @@ export interface MakerOpportunity {
   sport: string;
   outcome: 1 | 2;
   outcomeName: string;
-  tokenId: string;
+  tokenId: string; // CLOB token ID for this outcome
+  conditionId: string; // CLOB condition ID
   fairProb: number;
   targetPrice: number;
   currentBid: number | undefined;
@@ -203,6 +218,7 @@ export interface MakerOpportunity {
   ev: number;
   kellySize: KellySize;
   tickSize: number;
+  minOrderSize: number;
   negRisk: boolean;
 }
 
