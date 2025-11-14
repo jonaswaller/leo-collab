@@ -5,10 +5,8 @@ import { fetchWalletState } from "../src/arb/wallet.js";
 import {
   fetchOpenOrders,
   fetchCurrentPositions,
-  buildEnrichedPositions,
   computeCapitalSummary,
 } from "../src/arb/positions.js";
-import { discoverPolymarkets } from "../src/arb/discovery.js";
 
 async function main() {
   console.log("== Polymarket CLOB sanity check ==");
@@ -38,16 +36,7 @@ async function main() {
   if (positions.length > 0) {
     console.log("Sample position:", positions[0]);
   }
-
-  // 5) Enrich positions with Gamma metadata
-  const markets = await discoverPolymarkets();
-  const enrichedPositions = buildEnrichedPositions(markets, positions);
-  console.log(`Enriched positions count: ${enrichedPositions.length}`);
-  if (enrichedPositions.length > 0) {
-    console.log("Sample enriched position:", enrichedPositions[0]);
-  }
-
-  // 6) Calculate capital summary
+  // 5) Calculate capital summary
   const capital = computeCapitalSummary(
     wallet.usdcBalance,
     positions,

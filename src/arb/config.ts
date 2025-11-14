@@ -138,7 +138,7 @@ export const TAKER_MARGINS: Record<string, number> = {
 
 export const KELLY_MULTIPLIER = 0.5; // Half Kelly (conservative)
 export const MAX_PER_MARKET_FRACTION = 0.03; // 3% of bankroll per market
-export const MAX_PER_EVENT_FRACTION = 0.06; // 6% of bankroll per event
+export const MAX_PER_EVENT_FRACTION = 0.07; // 7% of bankroll per event
 export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================

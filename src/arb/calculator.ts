@@ -20,7 +20,24 @@ import {
   BANKROLL_USD,
 } from "./config.js";
 
-// Position tracking (in-memory for now)
+// ============================================================================
+// POSITION / EXPOSURE TRACKING
+// ============================================================================
+
+/**
+ * Snapshot of current exposure used to constrain Kelly sizing.
+ *
+ * All values are in USD, not shares.
+ * - marketKey: typically a market slug; used for per-market limits
+ * - eventKey: typically an event slug; used for per-event limits
+ */
+export interface ExposureSnapshot {
+  marketKey: string;
+  eventKey: string;
+  exposureUSD: number;
+}
+
+// In-memory aggregates of current exposure, populated by setExposureFromSnapshot().
 const currentPositions: {
   byMarket: Map<string, number>;
   byEvent: Map<string, number>;
@@ -28,6 +45,32 @@ const currentPositions: {
   byMarket: new Map(),
   byEvent: new Map(),
 };
+
+/**
+ * Replace the in-memory exposure maps with the provided snapshot.
+ *
+ * Call this once per loop (after fetching current positions) so that
+ * subsequent calls to calculateKellySize() reflect up-to-date exposure.
+ */
+export function setExposureFromSnapshot(snapshots: ExposureSnapshot[]): void {
+  currentPositions.byMarket.clear();
+  currentPositions.byEvent.clear();
+
+  for (const snap of snapshots) {
+    const { marketKey, eventKey, exposureUSD } = snap;
+    if (!Number.isFinite(exposureUSD) || exposureUSD <= 0) continue;
+
+    if (marketKey) {
+      const prev = currentPositions.byMarket.get(marketKey) || 0;
+      currentPositions.byMarket.set(marketKey, prev + exposureUSD);
+    }
+
+    if (eventKey) {
+      const prev = currentPositions.byEvent.get(eventKey) || 0;
+      currentPositions.byEvent.set(eventKey, prev + exposureUSD);
+    }
+  }
+}
 
 // ============================================================================
 // STATISTICAL UTILITIES

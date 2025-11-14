@@ -17,7 +17,9 @@ import {
   fetchCurrentPositions,
   fetchOpenOrders,
   computeCapitalSummary,
+  buildExposureSnapshotsFromPositions,
 } from "../src/arb/positions.js";
+import { setExposureFromSnapshot } from "../src/arb/calculator.js";
 
 async function main() {
   console.log("🧪 Testing full arbitrage pipeline...\n");
@@ -62,6 +64,20 @@ async function main() {
   const wallet = await fetchWalletState();
   const positions = await fetchCurrentPositions();
   const openOrders = await fetchOpenOrders();
+  const exposureSnapshots = buildExposureSnapshotsFromPositions(
+    markets,
+    positions,
+  );
+  const totalExposure = exposureSnapshots.reduce(
+    (sum, snap) => sum + snap.exposureUSD,
+    0,
+  );
+  console.log(
+    `   ✓ Built ${exposureSnapshots.length} exposure snapshots (position exposure: $${totalExposure.toFixed(
+      2,
+    )})`,
+  );
+  setExposureFromSnapshot(exposureSnapshots);
   const capital = computeCapitalSummary(
     wallet.usdcBalance,
     positions,

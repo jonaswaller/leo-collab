@@ -2,6 +2,7 @@ import axios from "axios";
 import { OpenOrder, OpenOrderParams } from "@polymarket/clob-client";
 import { PolymarketMarket } from "./types.js";
 import { getClobClient } from "./clob.js";
+import { ExposureSnapshot } from "./calculator.js";
 
 const DATA_API_BASE =
   process.env.POLYMARKET_DATA_API_URL?.trim() ||
@@ -181,6 +182,45 @@ export function buildEnrichedPositions(
   }
 
   return enriched;
+}
+
+// ============================================================================
+// EXPOSURE SNAPSHOTS FOR KELLY SIZING
+// ============================================================================
+
+/**
+ * Build ExposureSnapshot objects (in USD) from current positions + Gamma markets.
+ *
+ * This is the glue between account-level positions and the Kelly engine:
+ * - marketKey: we prefer the Polymarket market slug if available
+ * - eventKey: we prefer the Polymarket event slug if available
+ * - exposureUSD: current market value of the position
+ */
+export function buildExposureSnapshotsFromPositions(
+  markets: PolymarketMarket[],
+  rawPositions: RawPosition[],
+): ExposureSnapshot[] {
+  const enriched = buildEnrichedPositions(markets, rawPositions);
+  const snapshots: ExposureSnapshot[] = [];
+
+  for (const p of enriched) {
+    // Skip zero-valued positions defensively
+    if (!Number.isFinite(p.currentValueUSD) || p.currentValueUSD <= 0) continue;
+
+    const marketKey =
+      p.marketSlug ||
+      (p.eventSlug ? `${p.eventSlug}:${p.conditionId}` : p.conditionId);
+
+    const eventKey = p.eventSlug || p.marketSlug || p.conditionId;
+
+    snapshots.push({
+      marketKey,
+      eventKey,
+      exposureUSD: p.currentValueUSD,
+    });
+  }
+
+  return snapshots;
 }
 
 // ============================================================================

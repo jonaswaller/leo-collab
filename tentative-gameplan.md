@@ -128,7 +128,10 @@ Repost via: POST /order (same as step 7) 10. Batch Order Operations (optimizatio
 If you need to cancel multiple orders: use DELETE /orders (batch cancel)
 If you need to place multiple orders: use POST /orders (batch create)
 Saves on rate limits and is faster
-PHASE 5: Main Loop (Day 7) 11. Adaptive Polling Loop
+
+ALSO, WE NEED MAKER ORDERS CANCELLED IF THEY ARE NO LONGER THE BEST PRCIE ON THE MARKET
+
+### PHASE 5: Main Loop (Day 7) 11. Adaptive Polling Loop (WE WANT QUICKER FREQUENCY FOR EVENTS THAT ARE LESS FAR OUT)
 
 while (true):
 // 1. Discover markets
@@ -288,3 +291,6 @@ Everything else is optimization.
 Key difference from before: I now understand you need to parse clobTokenIds from Gamma API to get the actual token IDs for order placement. This is the missing link between your discovery phase and order execution. Without token IDs, you can't place orders. Period.
 
 Sound good?
+
+# TO-ADD
+* ADAPTIVE MARGINS FOR GAMES A WEEK OUT BECAUSE WE'RE LESS SURE OF THE PRICE
