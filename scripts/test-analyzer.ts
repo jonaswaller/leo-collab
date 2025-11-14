@@ -12,6 +12,12 @@ import { discoverPolymarkets } from "../src/arb/discovery.js";
 import { fetchOddsForMarkets } from "../src/arb/odds-fetcher.js";
 import { matchMarkets } from "../src/arb/matcher.js";
 import { analyzeOpportunities } from "../src/arb/analyzer.js";
+import { fetchWalletState } from "../src/arb/wallet.js";
+import {
+  fetchCurrentPositions,
+  fetchOpenOrders,
+  computeCapitalSummary,
+} from "../src/arb/positions.js";
 
 async function main() {
   console.log("🧪 Testing full arbitrage pipeline...\n");
@@ -51,10 +57,24 @@ async function main() {
     `   ✓ Matched ${matchedCount}/${matched.length} markets in ${matchTime}s\n`,
   );
 
-  // Step 4: Analyze opportunities
-  console.log("📈 Step 4: Analyzing opportunities...");
+  // Step 4: Get capital for Kelly sizing
+  console.log("💰 Step 4: Calculating available capital...");
+  const wallet = await fetchWalletState();
+  const positions = await fetchCurrentPositions();
+  const openOrders = await fetchOpenOrders();
+  const capital = computeCapitalSummary(
+    wallet.usdcBalance,
+    positions,
+    openOrders,
+  );
+  console.log(
+    `   ✓ Total capital: $${capital.totalCapitalUSD.toFixed(2)} (USDC: $${capital.usdcBalance.toFixed(2)} + Positions: $${capital.totalPositionValueUSD.toFixed(2)})\n`,
+  );
+
+  // Step 5: Analyze opportunities
+  console.log("📈 Step 5: Analyzing opportunities...");
   const startAnalyze = Date.now();
-  const opportunities = analyzeOpportunities(matched);
+  const opportunities = analyzeOpportunities(matched, capital.totalCapitalUSD);
   const analyzeTime = ((Date.now() - startAnalyze) / 1000).toFixed(1);
   console.log(`   ✓ Analysis complete in ${analyzeTime}s\n`);
 
@@ -151,6 +171,7 @@ async function main() {
           ? (opp.currentBid * 100).toFixed(1)
           : "N/A";
         const kellyUSD = opp.kellySize.constrainedSizeUSD.toFixed(0);
+        const kellyShares = opp.kellySize.constrainedShares.toFixed(0);
 
         // Determine which market type for display
         const marketTypeDisplay = opp.marketQuestion
@@ -171,7 +192,7 @@ async function main() {
         );
         console.log(`      True Prob: ${fairProb}% | Margin: ${marginPct}%`);
         console.log(
-          `      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | EV: +${evPct}% | Kelly: $${kellyUSD}`,
+          `      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | EV: +${evPct}% | Kelly: $${kellyUSD} (${kellyShares} shares)`,
         );
       });
   }

@@ -70,7 +70,10 @@ function isFirstHalf(question: string): boolean {
 /**
  * Calculate taker and maker EV for a matched market
  */
-function calculateMarketEV(match: MatchedMarket, bankrollUsd: number): void {
+function calculateMarketEV(
+  match: MatchedMarket,
+  totalCapitalUsd: number,
+): void {
   const pm = match.polymarket;
   const bookmakers = Object.keys(match.sportsbooks);
 
@@ -212,7 +215,7 @@ function calculateMarketEV(match: MatchedMarket, bankrollUsd: number): void {
     outcome1Kelly = calculateKellySize(
       consensus.consensus1,
       pm.bestAsk,
-      bankrollUsd,
+      totalCapitalUsd,
       `${marketSlug}-outcome1`,
       eventSlug,
     );
@@ -226,7 +229,7 @@ function calculateMarketEV(match: MatchedMarket, bankrollUsd: number): void {
     outcome2Kelly = calculateKellySize(
       consensus.consensus2,
       pm.outcome2Ask,
-      bankrollUsd,
+      totalCapitalUsd,
       `${marketSlug}-outcome2`,
       eventSlug,
     );
@@ -246,7 +249,7 @@ function calculateMarketEV(match: MatchedMarket, bankrollUsd: number): void {
     match,
     consensus.consensus1,
     consensus.consensus2,
-    bankrollUsd,
+    totalCapitalUsd,
   );
 }
 
@@ -257,7 +260,7 @@ function calculateMakerEV(
   match: MatchedMarket,
   fairProb1: number,
   fairProb2: number,
-  bankrollUsd: number,
+  totalCapitalUsd: number,
 ): void {
   const pm = match.polymarket;
   const marginRange = getMarginRange(
@@ -290,6 +293,7 @@ function calculateMakerEV(
 
   // Outcome 1 bid opportunity
   const outcome1BidTarget = fairProb1 - fairProb1 * marginRange.min;
+  const outcome1MaxMarginPrice = fairProb1 - fairProb1 * marginRange.max;
   let outcome1BidPrice = roundToWholePercent(outcome1BidTarget, "down");
 
   if (MAKER_STRATEGY === "incremental" && pm.bestBid !== undefined) {
@@ -303,16 +307,20 @@ function calculateMakerEV(
     outcome1BidPrice = pm.bestBid;
   }
 
-  if (pm.bestAsk !== undefined) {
-    while (outcome1BidPrice >= pm.bestAsk && outcome1BidPrice > 0.01) {
-      outcome1BidPrice -= 0.01;
-    }
+  // Ensure we stay below the ask (inside the spread)
+  if (pm.bestAsk !== undefined && outcome1BidPrice >= pm.bestAsk) {
+    outcome1BidPrice = Math.max(0.01, pm.bestAsk - 0.01);
   }
 
+  // If margin exceeds max threshold, raise bid to max margin price
   const outcome1BidMargin = (fairProb1 - outcome1BidPrice) / fairProb1;
-  const outcome1BidEV = outcome1BidMargin;
+  if (outcome1BidMargin > marginRange.max) {
+    outcome1BidPrice = roundToWholePercent(outcome1MaxMarginPrice, "down");
+  }
 
-  const bidMeetsMinimum = outcome1BidMargin >= marginRange.min;
+  const outcome1BidEV = (fairProb1 - outcome1BidPrice) / fairProb1;
+
+  const bidMeetsMinimum = outcome1BidEV >= marginRange.min;
   const bidIsCompetitive =
     pm.bestBid === undefined || outcome1BidPrice >= pm.bestBid;
   const withinSpread =
@@ -323,7 +331,7 @@ function calculateMakerEV(
   // maker margin thresholds. The trading logic still gates on Kelly size.
   if (withinSpread && bidIsCompetitive) {
     match.makerEV.outcome1BidPrice = outcome1BidPrice;
-    match.makerEV.outcome1BidMargin = outcome1BidMargin;
+    match.makerEV.outcome1BidMargin = outcome1BidEV;
     match.makerEV.outcome1BidEV = outcome1BidEV;
   }
 
@@ -333,7 +341,7 @@ function calculateMakerEV(
     match.makerEV.outcome1BidKelly = calculateKellySize(
       fairProb1,
       outcome1BidPrice,
-      bankrollUsd,
+      totalCapitalUsd,
       `${marketSlug}-outcome1`,
       eventSlug,
     );
@@ -341,6 +349,7 @@ function calculateMakerEV(
 
   // Outcome 2 bid opportunity
   const outcome2BidTarget = fairProb2 - fairProb2 * marginRange.min;
+  const outcome2MaxMarginPrice = fairProb2 - fairProb2 * marginRange.max;
   let outcome2BidPrice = roundToWholePercent(outcome2BidTarget, "down");
 
   if (MAKER_STRATEGY === "incremental" && pm.outcome2Bid !== undefined) {
@@ -354,16 +363,20 @@ function calculateMakerEV(
     outcome2BidPrice = pm.outcome2Bid;
   }
 
-  if (pm.outcome2Ask !== undefined) {
-    while (outcome2BidPrice >= pm.outcome2Ask && outcome2BidPrice > 0.01) {
-      outcome2BidPrice -= 0.01;
-    }
+  // Ensure we stay below the ask (inside the spread)
+  if (pm.outcome2Ask !== undefined && outcome2BidPrice >= pm.outcome2Ask) {
+    outcome2BidPrice = Math.max(0.01, pm.outcome2Ask - 0.01);
   }
 
+  // If margin exceeds max threshold, raise bid to max margin price
   const outcome2BidMargin = (fairProb2 - outcome2BidPrice) / fairProb2;
-  const outcome2BidEV = outcome2BidMargin;
+  if (outcome2BidMargin > marginRange.max) {
+    outcome2BidPrice = roundToWholePercent(outcome2MaxMarginPrice, "down");
+  }
 
-  const bid2MeetsMinimum = outcome2BidMargin >= marginRange.min;
+  const outcome2BidEV = (fairProb2 - outcome2BidPrice) / fairProb2;
+
+  const bid2MeetsMinimum = outcome2BidEV >= marginRange.min;
   const bid2IsCompetitive =
     pm.outcome2Bid === undefined || outcome2BidPrice >= pm.outcome2Bid;
   const withinSpread2 =
@@ -373,7 +386,7 @@ function calculateMakerEV(
   // but only attach Kelly (and thus treat as tradable) if margins are met.
   if (withinSpread2 && bid2IsCompetitive) {
     match.makerEV.outcome2BidPrice = outcome2BidPrice;
-    match.makerEV.outcome2BidMargin = outcome2BidMargin;
+    match.makerEV.outcome2BidMargin = outcome2BidEV;
     match.makerEV.outcome2BidEV = outcome2BidEV;
   }
 
@@ -381,7 +394,7 @@ function calculateMakerEV(
     match.makerEV.outcome2BidKelly = calculateKellySize(
       fairProb2,
       outcome2BidPrice,
-      bankrollUsd,
+      totalCapitalUsd,
       `${marketSlug}-outcome2`,
       eventSlug,
     );
@@ -416,17 +429,20 @@ function calculateMakerEV(
  * Analyze matched markets to identify taker and maker opportunities
  *
  * @param matched - Array of matched markets from matcher
- * @param bankrollUsd - Available USDC balance for Kelly sizing (defaults to 1000)
+ * @param totalCapitalUsd - Total capital (USDC + position value) for Kelly sizing
  * @returns Structured opportunities ready for execution
+ *
+ * IMPORTANT: totalCapitalUsd should be your TOTAL CAPITAL (USDC balance + position value),
+ * not just free USDC. Use computeCapitalSummary() from positions.ts to get this value.
  */
 export function analyzeOpportunities(
   matched: MatchedMarket[],
-  bankrollUsd: number = 1000,
+  totalCapitalUsd: number,
 ): Opportunities {
   // Calculate EV for all matched markets
   for (const match of matched) {
     if (Object.keys(match.sportsbooks).length > 0) {
-      calculateMarketEV(match, bankrollUsd);
+      calculateMarketEV(match, totalCapitalUsd);
     }
   }
 

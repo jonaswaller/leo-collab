@@ -10,6 +10,12 @@ import { discoverPolymarkets } from "../src/arb/discovery.js";
 import { fetchOddsForMarkets } from "../src/arb/odds-fetcher.js";
 import { matchMarkets } from "../src/arb/matcher.js";
 import { analyzeOpportunities } from "../src/arb/analyzer.js";
+import { fetchWalletState } from "../src/arb/wallet.js";
+import {
+  fetchCurrentPositions,
+  fetchOpenOrders,
+  computeCapitalSummary,
+} from "../src/arb/positions.js";
 
 async function main() {
   console.log("📊 Computing EVs for all matched markets...\n");
@@ -29,8 +35,24 @@ async function main() {
   console.log(`Total markets:   ${allMatches.length}`);
   console.log(`Matched markets: ${matchedMarkets.length}\n`);
 
-  // Step 4: Analyze to compute EVs; this mutates the matched objects
-  const opportunities = analyzeOpportunities(matchedMarkets);
+  // Step 4: Get capital for Kelly sizing
+  const wallet = await fetchWalletState();
+  const positions = await fetchCurrentPositions();
+  const openOrders = await fetchOpenOrders();
+  const capital = computeCapitalSummary(
+    wallet.usdcBalance,
+    positions,
+    openOrders,
+  );
+  console.log(
+    `Total capital: $${capital.totalCapitalUSD.toFixed(2)} (for Kelly sizing)\n`,
+  );
+
+  // Step 5: Analyze to compute EVs; this mutates the matched objects
+  const opportunities = analyzeOpportunities(
+    matchedMarkets,
+    capital.totalCapitalUSD,
+  );
   const marketsWithEV = opportunities.matched;
 
   // Step 5: Sort by best maker EV (descending) so the strongest edges appear first

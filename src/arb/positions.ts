@@ -24,16 +24,17 @@ export async function fetchOpenOrders(
 
 /**
  * Raw position shape from Polymarket Data API `/positions`.
- * This is intentionally loose; we only depend on a few core fields downstream.
+ * Based on actual API response fields.
  */
 export interface RawPosition {
-  market: string;
-  asset: string;
+  asset: string; // Token ID
   conditionId: string;
-  balance: string;
-  avgPrice: string;
-  value: string;
-  [key: string]: unknown;
+  size: number; // Number of shares held
+  avgPrice: number; // Average entry price per share
+  currentValue: number; // Current market value in USD (size * current_price)
+  curPrice: number; // Current market price per share
+  slug?: string; // Market slug (for reference)
+  [key: string]: unknown; // Allow other fields
 }
 
 function getUserAddress(): string {
@@ -86,7 +87,9 @@ export interface EnrichedPosition {
   // Position details
   shares: number;
   avgEntryPrice: number;
+  currentMarketPrice: number;
   currentValueUSD: number;
+  unrealizedPnL: number;
 }
 
 /**
@@ -110,6 +113,9 @@ function indexMarketsByConditionId(
  *
  * This glue is what lets us tie the account-level positions (Data API) back
  * into the markets we discovered from Gamma.
+ *
+ * NOTE: Positions in closed/non-sports markets won't match and will have
+ * undefined metadata, but we still include them for capital tracking.
  */
 export function buildEnrichedPositions(
   markets: PolymarketMarket[],
@@ -129,6 +135,7 @@ export function buildEnrichedPositions(
     let sport: string | undefined;
     let marketSlug: string | undefined;
     let eventSlug: string | undefined;
+    let currentMarketPrice = raw.curPrice || 0;
 
     if (market) {
       sport = market.sport;
@@ -137,19 +144,26 @@ export function buildEnrichedPositions(
 
       if (market.clobTokenIds && market.clobTokenIds.length >= 2) {
         const idx = market.clobTokenIds.indexOf(tokenId);
-        if (idx === 0) outcomeName = market.outcome1Name;
-        else if (idx === 1) outcomeName = market.outcome2Name;
+        if (idx === 0) {
+          outcomeName = market.outcome1Name;
+          // Use Gamma price if available (lastPrice or bestAsk), otherwise use Data API price
+          currentMarketPrice =
+            market.lastPrice || market.bestAsk || currentMarketPrice;
+        } else if (idx === 1) {
+          outcomeName = market.outcome2Name;
+          // Use Gamma price if available (outcome2Ask), otherwise use Data API price
+          currentMarketPrice = market.outcome2Ask || currentMarketPrice;
+        }
       }
     }
 
-    const shares = Number(raw.balance) || 0;
-    const avgEntryPrice = Number(raw.avgPrice) || 0;
-    const currentValueUSD =
-      Number(raw.value) ||
-      (shares > 0 && avgEntryPrice > 0 ? shares * avgEntryPrice : 0);
+    const shares = raw.size || 0;
+    const avgEntryPrice = raw.avgPrice || 0;
+    const currentValueUSD = raw.currentValue || 0;
+    const unrealizedPnL = (currentMarketPrice - avgEntryPrice) * shares;
 
-    // Ignore truly empty positions
-    if (shares === 0 && currentValueUSD === 0) continue;
+    // Include all positions with shares > 0
+    if (shares === 0) continue;
 
     enriched.push({
       conditionId,
@@ -160,7 +174,9 @@ export function buildEnrichedPositions(
       outcomeName,
       shares,
       avgEntryPrice,
+      currentMarketPrice,
       currentValueUSD,
+      unrealizedPnL,
     });
   }
 
@@ -168,61 +184,44 @@ export function buildEnrichedPositions(
 }
 
 // ============================================================================
-// CAPITAL / EXPOSURE SUMMARY (uses CLOB + positions)
+// CAPITAL / EXPOSURE SUMMARY
 // ============================================================================
 
-export interface CapitalUsage {
-  totalPositionValueUSD: number;
-  totalOpenOrderExposureUSD: number;
-  availableCapitalUSD: number;
+export interface CapitalSummary {
+  usdcBalance: number; // Free USDC in wallet
+  totalPositionValueUSD: number; // Current market value of all shares held
+  totalCapitalUSD: number; // USDC + Position Value (total buying power)
+  openOrderCount: number; // Number of unfilled orders (for info only)
 }
 
 /**
- * Compute capital usage given wallet balance (USDC), enriched positions, and open orders.
+ * Compute capital summary for Kelly sizing and position management.
  *
- * - Position value is taken directly from the position `currentValueUSD` field.
- * - Open-order exposure is approximated as remaining BUY size * price; SELL orders
- *   do not consume USDC and are treated as zero capital usage.
+ * Key insights from Polymarket mechanics:
+ * 1. Open orders DO NOT lock capital - they're just limit orders on the book
+ * 2. Position value ADDS to your capital - shares have market value you can sell
+ * 3. Total capital = USDC Balance + Position Market Value
+ *
+ * This is different from traditional exchanges where limit orders lock collateral.
  */
-export function computeCapitalUsage(
-  walletBalanceUSD: number,
-  positions: EnrichedPosition[],
+export function computeCapitalSummary(
+  usdcBalance: number,
+  rawPositions: RawPosition[],
   openOrders: OpenOrder[],
-): CapitalUsage {
-  const totalPositionValueUSD = positions.reduce(
-    (sum, p) =>
-      sum + (Number.isFinite(p.currentValueUSD) ? p.currentValueUSD : 0),
+): CapitalSummary {
+  // Sum current market value of all positions
+  const totalPositionValueUSD = rawPositions.reduce(
+    (sum, p) => sum + (Number(p.currentValue) || 0),
     0,
   );
 
-  let totalOpenOrderExposureUSD = 0;
-  for (const o of openOrders) {
-    const size = Number(o.original_size);
-    const matched = Number(o.size_matched);
-    const price = Number(o.price);
-
-    if (
-      !Number.isFinite(size) ||
-      !Number.isFinite(matched) ||
-      !Number.isFinite(price)
-    ) {
-      continue;
-    }
-
-    const remaining = Math.max(0, size - matched);
-
-    // BUY orders lock USDC; SELL orders lock shares (we ignore those in USD terms here).
-    if (o.side === "BUY") {
-      totalOpenOrderExposureUSD += remaining * price;
-    }
-  }
-
-  const used = totalPositionValueUSD + totalOpenOrderExposureUSD;
-  const availableCapitalUSD = Math.max(0, walletBalanceUSD - used);
+  // Total capital is USDC + position value (both are liquid)
+  const totalCapitalUSD = usdcBalance + totalPositionValueUSD;
 
   return {
+    usdcBalance,
     totalPositionValueUSD,
-    totalOpenOrderExposureUSD,
-    availableCapitalUSD,
+    totalCapitalUSD,
+    openOrderCount: openOrders.length,
   };
 }

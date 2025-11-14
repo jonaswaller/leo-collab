@@ -6,7 +6,7 @@ import {
   fetchOpenOrders,
   fetchCurrentPositions,
   buildEnrichedPositions,
-  computeCapitalUsage,
+  computeCapitalSummary,
 } from "../src/arb/positions.js";
 import { discoverPolymarkets } from "../src/arb/discovery.js";
 
@@ -39,7 +39,7 @@ async function main() {
     console.log("Sample position:", positions[0]);
   }
 
-  // 5) Enrich positions with Gamma metadata and compute capital usage
+  // 5) Enrich positions with Gamma metadata
   const markets = await discoverPolymarkets();
   const enrichedPositions = buildEnrichedPositions(markets, positions);
   console.log(`Enriched positions count: ${enrichedPositions.length}`);
@@ -47,12 +47,22 @@ async function main() {
     console.log("Sample enriched position:", enrichedPositions[0]);
   }
 
-  const capital = computeCapitalUsage(
+  // 6) Calculate capital summary
+  const capital = computeCapitalSummary(
     wallet.usdcBalance,
-    enrichedPositions,
+    positions,
     openOrders,
   );
-  console.log("Capital usage summary:", capital);
+
+  console.log("\n=== CAPITAL SUMMARY ===");
+  console.log(`USDC Balance: $${capital.usdcBalance.toFixed(2)}`);
+  console.log(`Position Value: $${capital.totalPositionValueUSD.toFixed(2)}`);
+  console.log(`─────────────────────────────`);
+  console.log(`TOTAL CAPITAL: $${capital.totalCapitalUSD.toFixed(2)}`);
+  console.log(`Open Orders: ${capital.openOrderCount} (don't lock capital)`);
+  console.log(
+    `\nℹ️  Your $${capital.totalCapitalUSD.toFixed(2)} is fully available for Kelly sizing`,
+  );
 }
 
 main().catch((err) => {
