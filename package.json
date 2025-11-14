@@ -5,9 +5,14 @@
   "main": "index.js",
   "scripts": {
     "start": "tsx src/index.ts",
-    "fetch-sports": "tsx scripts/fetch-upcoming-sports.ts",
-    "match-odds": "tsx scripts/match-odds.ts",
-    "debug-matching": "tsx scripts/debug-matching.ts"
+    "test-analyzer": "tsx scripts/test-analyzer.ts",
+    "test-clob": "tsx scripts/test-clob.ts",
+    "test-discovery": "tsx scripts/test-discovery.ts",
+    "test-matcher": "tsx scripts/test-matcher.ts",
+    "test-metadata": "tsx scripts/test-metadata.ts",
+    "test-odds-fetcher": "tsx scripts/test-odds-fetcher.ts",
+    "print-evs": "tsx scripts/print-evs.ts",
+    "debug-skipped": "tsx scripts/debug-skipped-markets.ts"
   },
   "keywords": [],
   "author": "",

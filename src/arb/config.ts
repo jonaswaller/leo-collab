@@ -99,6 +99,10 @@ export const SPORT_MAP: Record<string, string> = {
   wcq_europe: "soccer_fifa_world_cup_qualifiers_europe", // FIFA WCQ - UEFA
   wcq_south_america: "soccer_fifa_world_cup_qualifiers_south_america", // FIFA WCQ - CONMEBOL
   concacaf: "soccer_concacaf_gold_cup", // CONCACAF competitions
+  wc: "soccer_fifa_world_cup", // FIFA World Cup
+  wwc: "soccer_fifa_world_cup_womens", // FIFA Women's World Cup
+  wcw: "soccer_fifa_world_cup_winner", // FIFA World Cup Winner
+  cwc: "soccer_fifa_club_world_cup", // FIFA Club World Cup
   mma: "mma_mixed_martial_arts",
 };
 
@@ -135,7 +139,7 @@ export const TAKER_MARGINS: Record<string, number> = {
 export const KELLY_MULTIPLIER = 0.5; // Half Kelly (conservative)
 export const MAX_PER_MARKET_FRACTION = 0.03; // 3% of bankroll per market
 export const MAX_PER_EVENT_FRACTION = 0.06; // 6% of bankroll per event
-export const BANKROLL_USD = 1000; // TODO: Get from wallet balance in production
+export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================
 // MAKER STRATEGY

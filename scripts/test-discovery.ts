@@ -1,9 +1,9 @@
 /**
  * Test script for discovery module
- * Run: tsx src/arb/test-discovery.ts
+ * Run: npx tsx src/arb/test-discovery.ts
  */
 
-import { discoverPolymarkets } from "./discovery.js";
+import { discoverPolymarkets } from "../src/arb/discovery.js";
 
 async function main() {
   console.log("🧪 Testing Polymarket discovery module...\n");

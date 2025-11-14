@@ -104,10 +104,13 @@ function matchMarket(
   }
 
   // Find matching event
+  // Try both directions since Polymarket and sportsbooks may have home/away swapped
   const matchingEvent = oddsEvents.find((event) => {
     const homeMatch = teamsMatch(pmMarket.homeTeam!, event.home_team);
     const awayMatch = teamsMatch(pmMarket.awayTeam!, event.away_team);
-    return homeMatch && awayMatch;
+    const homeMatchReversed = teamsMatch(pmMarket.homeTeam!, event.away_team);
+    const awayMatchReversed = teamsMatch(pmMarket.awayTeam!, event.home_team);
+    return (homeMatch && awayMatch) || (homeMatchReversed && awayMatchReversed);
   });
 
   if (!matchingEvent) {
@@ -165,25 +168,47 @@ function matchMarket(
         }
       }
     } else {
-      // For h2h, find a 2-way market (exclude 3-way markets with Draw)
-      // Some European bookmakers return 3-way markets under the h2h key
-      // For NHL, European books offer 3-way "regulation time" markets which are
-      // fundamentally different from 2-way "including OT/shootout" markets
+      // For h2h markets
+      // Soccer uses 3-way markets (team1/draw/team2)
+      // Other sports use 2-way markets (team1/team2)
+      const isSoccer =
+        pmMarket.sport.includes("soccer") ||
+        pmMarket.sport.includes("wcq") ||
+        pmMarket.sport.includes("epl") ||
+        pmMarket.sport.includes("lal") ||
+        pmMarket.sport.includes("sea") ||
+        pmMarket.sport.includes("bun") ||
+        pmMarket.sport.includes("fl1") ||
+        pmMarket.sport.includes("ere") ||
+        pmMarket.sport.includes("mls") ||
+        pmMarket.sport.includes("mex") ||
+        pmMarket.sport.includes("ucl") ||
+        pmMarket.sport.includes("uel") ||
+        pmMarket.sport.includes("wc") ||
+        pmMarket.sport.includes("cwc");
+
       for (const marketKey of possibleMarketKeys) {
         const market = bookmaker.markets.find((m) => m.key === marketKey);
         if (!market) continue;
-        
-        // Filter out 3-way markets:
-        // 1. Must have exactly 2 outcomes
-        // 2. Must NOT have a "Draw" outcome
+
         const hasDrawOutcome = market.outcomes.some(
-          (outcome) => outcome.name.toLowerCase() === "draw" || 
-                       outcome.name.toLowerCase() === "tie"
+          (outcome) =>
+            outcome.name.toLowerCase() === "draw" ||
+            outcome.name.toLowerCase() === "tie",
         );
-        
-        if (market.outcomes.length === 2 && !hasDrawOutcome) {
+
+        // For soccer, accept 3-way markets
+        // For other sports, only accept 2-way markets (no draw)
+        if (isSoccer) {
+          // Accept any h2h market for soccer (2-way or 3-way)
           oddsMarket = market;
           break;
+        } else {
+          // For non-soccer, exclude 3-way markets
+          if (market.outcomes.length === 2 && !hasDrawOutcome) {
+            oddsMarket = market;
+            break;
+          }
         }
       }
     }

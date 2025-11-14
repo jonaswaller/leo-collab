@@ -7,8 +7,8 @@
  */
 
 import "dotenv/config";
-import { discoverPolymarkets } from "./discovery.js";
-import { fetchOddsForMarkets } from "./odds-fetcher.js";
+import { discoverPolymarkets } from "../src/arb/discovery.js";
+import { fetchOddsForMarkets } from "../src/arb/odds-fetcher.js";
 
 async function main() {
   console.log("🧪 Testing odds fetcher module...\n");

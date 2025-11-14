@@ -70,7 +70,7 @@ function isFirstHalf(question: string): boolean {
 /**
  * Calculate taker and maker EV for a matched market
  */
-function calculateMarketEV(match: MatchedMarket): void {
+function calculateMarketEV(match: MatchedMarket, bankrollUsd: number): void {
   const pm = match.polymarket;
   const bookmakers = Object.keys(match.sportsbooks);
 
@@ -212,7 +212,7 @@ function calculateMarketEV(match: MatchedMarket): void {
     outcome1Kelly = calculateKellySize(
       consensus.consensus1,
       pm.bestAsk,
-      1000, // BANKROLL_USD from config
+      bankrollUsd,
       `${marketSlug}-outcome1`,
       eventSlug,
     );
@@ -226,7 +226,7 @@ function calculateMarketEV(match: MatchedMarket): void {
     outcome2Kelly = calculateKellySize(
       consensus.consensus2,
       pm.outcome2Ask,
-      1000, // BANKROLL_USD from config
+      bankrollUsd,
       `${marketSlug}-outcome2`,
       eventSlug,
     );
@@ -242,7 +242,12 @@ function calculateMarketEV(match: MatchedMarket): void {
   };
 
   // Calculate maker EV
-  calculateMakerEV(match, consensus.consensus1, consensus.consensus2);
+  calculateMakerEV(
+    match,
+    consensus.consensus1,
+    consensus.consensus2,
+    bankrollUsd,
+  );
 }
 
 /**
@@ -252,6 +257,7 @@ function calculateMakerEV(
   match: MatchedMarket,
   fairProb1: number,
   fairProb2: number,
+  bankrollUsd: number,
 ): void {
   const pm = match.polymarket;
   const marginRange = getMarginRange(
@@ -309,19 +315,25 @@ function calculateMakerEV(
   const bidMeetsMinimum = outcome1BidMargin >= marginRange.min;
   const bidIsCompetitive =
     pm.bestBid === undefined || outcome1BidPrice >= pm.bestBid;
+  const withinSpread =
+    pm.bestAsk === undefined || outcome1BidPrice < pm.bestAsk;
 
-  if (
-    (pm.bestAsk === undefined || outcome1BidPrice < pm.bestAsk) &&
-    bidMeetsMinimum &&
-    bidIsCompetitive
-  ) {
+  // Always record raw maker EV when the quote is structurally valid
+  // (inside the spread and competitive), even if it doesn't meet our
+  // maker margin thresholds. The trading logic still gates on Kelly size.
+  if (withinSpread && bidIsCompetitive) {
     match.makerEV.outcome1BidPrice = outcome1BidPrice;
     match.makerEV.outcome1BidMargin = outcome1BidMargin;
     match.makerEV.outcome1BidEV = outcome1BidEV;
+  }
+
+  // Only compute Kelly sizing (and thus treat this as a real maker
+  // opportunity) if it meets our configured maker margins.
+  if (withinSpread && bidMeetsMinimum && bidIsCompetitive) {
     match.makerEV.outcome1BidKelly = calculateKellySize(
       fairProb1,
       outcome1BidPrice,
-      1000, // BANKROLL_USD from config
+      bankrollUsd,
       `${marketSlug}-outcome1`,
       eventSlug,
     );
@@ -354,19 +366,22 @@ function calculateMakerEV(
   const bid2MeetsMinimum = outcome2BidMargin >= marginRange.min;
   const bid2IsCompetitive =
     pm.outcome2Bid === undefined || outcome2BidPrice >= pm.outcome2Bid;
+  const withinSpread2 =
+    pm.outcome2Ask === undefined || outcome2BidPrice < pm.outcome2Ask;
 
-  if (
-    (pm.outcome2Ask === undefined || outcome2BidPrice < pm.outcome2Ask) &&
-    bid2MeetsMinimum &&
-    bid2IsCompetitive
-  ) {
+  // Same pattern as outcome 1: always store raw EV when structurally valid,
+  // but only attach Kelly (and thus treat as tradable) if margins are met.
+  if (withinSpread2 && bid2IsCompetitive) {
     match.makerEV.outcome2BidPrice = outcome2BidPrice;
     match.makerEV.outcome2BidMargin = outcome2BidMargin;
     match.makerEV.outcome2BidEV = outcome2BidEV;
+  }
+
+  if (withinSpread2 && bid2MeetsMinimum && bid2IsCompetitive) {
     match.makerEV.outcome2BidKelly = calculateKellySize(
       fairProb2,
       outcome2BidPrice,
-      1000, // BANKROLL_USD from config
+      bankrollUsd,
       `${marketSlug}-outcome2`,
       eventSlug,
     );
@@ -401,13 +416,17 @@ function calculateMakerEV(
  * Analyze matched markets to identify taker and maker opportunities
  *
  * @param matched - Array of matched markets from matcher
+ * @param bankrollUsd - Available USDC balance for Kelly sizing (defaults to 1000)
  * @returns Structured opportunities ready for execution
  */
-export function analyzeOpportunities(matched: MatchedMarket[]): Opportunities {
+export function analyzeOpportunities(
+  matched: MatchedMarket[],
+  bankrollUsd: number = 1000,
+): Opportunities {
   // Calculate EV for all matched markets
   for (const match of matched) {
     if (Object.keys(match.sportsbooks).length > 0) {
-      calculateMarketEV(match);
+      calculateMarketEV(match, bankrollUsd);
     }
   }
 

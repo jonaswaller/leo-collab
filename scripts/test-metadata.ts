@@ -12,7 +12,7 @@
  */
 
 import "dotenv/config";
-import { discoverPolymarkets } from "./discovery.js";
+import { discoverPolymarkets } from "../src/arb/discovery.js";
 
 async function main() {
   console.log("🧪 Testing CLOB metadata extraction...\n");
@@ -49,12 +49,24 @@ async function main() {
   }
 
   console.log("📈 Metadata Completeness:");
-  console.log(`   • Markets with Token IDs: ${withTokenIds}/${markets.length} (${((withTokenIds / markets.length) * 100).toFixed(1)}%)`);
-  console.log(`   • Markets with Condition ID: ${withConditionId}/${markets.length} (${((withConditionId / markets.length) * 100).toFixed(1)}%)`);
-  console.log(`   • Markets with Tick Size: ${withTickSize}/${markets.length} (${((withTickSize / markets.length) * 100).toFixed(1)}%)`);
-  console.log(`   • Markets with Min Order Size: ${withMinOrderSize}/${markets.length} (${((withMinOrderSize / markets.length) * 100).toFixed(1)}%)`);
-  console.log(`   • Markets with Neg-Risk Status: ${withNegRisk}/${markets.length} (${((withNegRisk / markets.length) * 100).toFixed(1)}%)`);
-  console.log(`   • Fully Complete (all fields): ${fullyComplete}/${markets.length} (${((fullyComplete / markets.length) * 100).toFixed(1)}%)\n`);
+  console.log(
+    `   • Markets with Token IDs: ${withTokenIds}/${markets.length} (${((withTokenIds / markets.length) * 100).toFixed(1)}%)`,
+  );
+  console.log(
+    `   • Markets with Condition ID: ${withConditionId}/${markets.length} (${((withConditionId / markets.length) * 100).toFixed(1)}%)`,
+  );
+  console.log(
+    `   • Markets with Tick Size: ${withTickSize}/${markets.length} (${((withTickSize / markets.length) * 100).toFixed(1)}%)`,
+  );
+  console.log(
+    `   • Markets with Min Order Size: ${withMinOrderSize}/${markets.length} (${((withMinOrderSize / markets.length) * 100).toFixed(1)}%)`,
+  );
+  console.log(
+    `   • Markets with Neg-Risk Status: ${withNegRisk}/${markets.length} (${((withNegRisk / markets.length) * 100).toFixed(1)}%)`,
+  );
+  console.log(
+    `   • Fully Complete (all fields): ${fullyComplete}/${markets.length} (${((fullyComplete / markets.length) * 100).toFixed(1)}%)\n`,
+  );
 
   // Show sample markets with complete metadata
   console.log("📋 Sample Markets with Complete Metadata:\n");
@@ -89,9 +101,13 @@ async function main() {
   const missingConditionId = markets.filter((m) => !m.conditionId);
 
   if (missingTokenIds.length > 0) {
-    console.log(`⚠️  WARNING: ${missingTokenIds.length} markets missing Token IDs`);
-    console.log("   These markets CANNOT be traded until Token IDs are available\n");
-    
+    console.log(
+      `⚠️  WARNING: ${missingTokenIds.length} markets missing Token IDs`,
+    );
+    console.log(
+      "   These markets CANNOT be traded until Token IDs are available\n",
+    );
+
     // Show first 3 examples
     for (let i = 0; i < Math.min(3, missingTokenIds.length); i++) {
       const m = missingTokenIds[i];
@@ -103,25 +119,39 @@ async function main() {
   }
 
   if (missingConditionId.length > 0) {
-    console.log(`⚠️  WARNING: ${missingConditionId.length} markets missing Condition ID`);
-    console.log("   These markets CANNOT be traded until Condition ID is available\n");
+    console.log(
+      `⚠️  WARNING: ${missingConditionId.length} markets missing Condition ID`,
+    );
+    console.log(
+      "   These markets CANNOT be traded until Condition ID is available\n",
+    );
   }
 
   // Summary
   console.log("✅ Metadata extraction test complete!\n");
   console.log("📊 Summary:");
-  console.log(`   • ${fullyComplete} markets are ready for trading (have all required metadata)`);
-  console.log(`   • ${markets.length - fullyComplete} markets need additional metadata`);
-  
+  console.log(
+    `   • ${fullyComplete} markets are ready for trading (have all required metadata)`,
+  );
+  console.log(
+    `   • ${markets.length - fullyComplete} markets need additional metadata`,
+  );
+
   if (fullyComplete === 0) {
     console.log("\n❌ CRITICAL: No markets have complete metadata!");
     console.log("   This means we cannot place any orders yet.");
-    console.log("   Check if Gamma API is returning clobTokenIds and conditionId fields.");
+    console.log(
+      "   Check if Gamma API is returning clobTokenIds and conditionId fields.",
+    );
   } else if (fullyComplete < markets.length * 0.5) {
-    console.log("\n⚠️  WARNING: Less than 50% of markets have complete metadata");
+    console.log(
+      "\n⚠️  WARNING: Less than 50% of markets have complete metadata",
+    );
     console.log("   Some markets may not be tradeable");
   } else {
-    console.log("\n✅ Good! Most markets have complete metadata and are ready for trading");
+    console.log(
+      "\n✅ Good! Most markets have complete metadata and are ready for trading",
+    );
   }
 }
 

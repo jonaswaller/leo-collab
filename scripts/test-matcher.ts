@@ -7,9 +7,9 @@
  */
 
 import "dotenv/config";
-import { discoverPolymarkets } from "./discovery.js";
-import { fetchOddsForMarkets } from "./odds-fetcher.js";
-import { matchMarkets } from "./matcher.js";
+import { discoverPolymarkets } from "../src/arb/discovery.js";
+import { fetchOddsForMarkets } from "../src/arb/odds-fetcher.js";
+import { matchMarkets } from "../src/arb/matcher.js";
 
 async function main() {
   console.log("🧪 Testing matcher module...\n");

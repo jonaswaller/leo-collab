@@ -562,10 +562,7 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
         }
 
         // Add minimum order size (minimum shares per order)
-        if (
-          market.orderMinSize !== null &&
-          market.orderMinSize !== undefined
-        ) {
+        if (market.orderMinSize !== null && market.orderMinSize !== undefined) {
           polymarketMarket.minOrderSize = market.orderMinSize;
         }
 

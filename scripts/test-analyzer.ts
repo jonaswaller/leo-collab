@@ -8,10 +8,10 @@
  */
 
 import "dotenv/config";
-import { discoverPolymarkets } from "./discovery.js";
-import { fetchOddsForMarkets } from "./odds-fetcher.js";
-import { matchMarkets } from "./matcher.js";
-import { analyzeOpportunities } from "./analyzer.js";
+import { discoverPolymarkets } from "../src/arb/discovery.js";
+import { fetchOddsForMarkets } from "../src/arb/odds-fetcher.js";
+import { matchMarkets } from "../src/arb/matcher.js";
+import { analyzeOpportunities } from "../src/arb/analyzer.js";
 
 async function main() {
   console.log("🧪 Testing full arbitrage pipeline...\n");
@@ -97,19 +97,28 @@ async function main() {
         const polyAsk = (opp.polymarketAsk * 100).toFixed(2);
         const kellyUSD = opp.kellySize.constrainedSizeUSD.toFixed(0);
         const kellyShares = opp.kellySize.constrainedShares.toFixed(0);
-        
+
         // Determine which market type for display
-        const marketTypeDisplay = opp.marketQuestion.toLowerCase().includes("spread") ? "spreads" :
-                                   opp.marketQuestion.toLowerCase().includes("o/u") || 
-                                   opp.marketQuestion.toLowerCase().includes("total") ? "totals" : "h2h";
-        
+        const marketTypeDisplay = opp.marketQuestion
+          .toLowerCase()
+          .includes("spread")
+          ? "spreads"
+          : opp.marketQuestion.toLowerCase().includes("o/u") ||
+              opp.marketQuestion.toLowerCase().includes("total")
+            ? "totals"
+            : "h2h";
+
         console.log(
           `\n   ${i + 1}. ${opp.sport.toUpperCase()} - ${opp.eventTitle}`,
         );
         console.log(`      ${opp.marketQuestion}`);
         console.log(`      ${opp.outcomeName}: +${evPct}% EV`);
-        console.log(`      True Prob: ${fairProb}% | Polymarket Ask: ${polyAsk}%`);
-        console.log(`      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | Kelly: $${kellyUSD} (${kellyShares} shares)`);
+        console.log(
+          `      True Prob: ${fairProb}% | Polymarket Ask: ${polyAsk}%`,
+        );
+        console.log(
+          `      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | Kelly: $${kellyUSD} (${kellyShares} shares)`,
+        );
       });
   }
 
@@ -142,11 +151,16 @@ async function main() {
           ? (opp.currentBid * 100).toFixed(1)
           : "N/A";
         const kellyUSD = opp.kellySize.constrainedSizeUSD.toFixed(0);
-        
+
         // Determine which market type for display
-        const marketTypeDisplay = opp.marketQuestion.toLowerCase().includes("spread") ? "spreads" :
-                                   opp.marketQuestion.toLowerCase().includes("o/u") || 
-                                   opp.marketQuestion.toLowerCase().includes("total") ? "totals" : "h2h";
+        const marketTypeDisplay = opp.marketQuestion
+          .toLowerCase()
+          .includes("spread")
+          ? "spreads"
+          : opp.marketQuestion.toLowerCase().includes("o/u") ||
+              opp.marketQuestion.toLowerCase().includes("total")
+            ? "totals"
+            : "h2h";
 
         console.log(
           `\n   ${i + 1}. ${opp.sport.toUpperCase()} - ${opp.eventTitle}`,
@@ -156,7 +170,9 @@ async function main() {
           `      ${opp.outcomeName} BID @ ${targetPrice}% (cur: ${currentBid}%)`,
         );
         console.log(`      True Prob: ${fairProb}% | Margin: ${marginPct}%`);
-        console.log(`      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | EV: +${evPct}% | Kelly: $${kellyUSD}`);
+        console.log(
+          `      Method: ${marketTypeDisplay === "h2h" ? "Power" : "Probit"} | EV: +${evPct}% | Kelly: $${kellyUSD}`,
+        );
       });
   }
 
