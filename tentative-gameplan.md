@@ -293,4 +293,5 @@ Key difference from before: I now understand you need to parse clobTokenIds from
 Sound good?
 
 # TO-ADD
-* ADAPTIVE MARGINS FOR GAMES A WEEK OUT BECAUSE WE'RE LESS SURE OF THE PRICE
+
+- ADAPTIVE MARGINS FOR GAMES A WEEK OUT BECAUSE WE'RE LESS SURE OF THE PRICE

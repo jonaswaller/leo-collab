@@ -104,7 +104,7 @@ async function main() {
 
   // Helper to find a human-readable label for a marketKey
   function describeMarketKey(marketKey: string): string {
-    const match = enriched.find(e => {
+    const match = enriched.find((e) => {
       const keyFromMarketSlug = e.marketSlug;
       const keyFromEventAndCond =
         e.eventSlug && e.conditionId
@@ -112,7 +112,11 @@ async function main() {
           : undefined;
       if (keyFromMarketSlug && keyFromMarketSlug === marketKey) return true;
       if (keyFromEventAndCond && keyFromEventAndCond === marketKey) return true;
-      if (!keyFromMarketSlug && !keyFromEventAndCond && e.conditionId === marketKey)
+      if (
+        !keyFromMarketSlug &&
+        !keyFromEventAndCond &&
+        e.conditionId === marketKey
+      )
         return true;
       return false;
     });
@@ -179,9 +183,7 @@ async function main() {
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("Debug failed:", err);
   process.exit(1);
 });
-
-

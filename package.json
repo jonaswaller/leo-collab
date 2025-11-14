@@ -13,7 +13,9 @@
     "test-odds-fetcher": "tsx scripts/test-odds-fetcher.ts",
     "print-evs": "tsx scripts/print-evs.ts",
     "debug-skipped": "tsx scripts/debug-skipped-markets.ts",
-    "debug-positions": "tsx scripts/debug-positions.ts"
+    "debug-positions": "tsx scripts/debug-positions.ts",
+    "test-execution": "tsx scripts/test-execution.ts",
+    "test-order-monitor": "tsx scripts/test-order-monitor.ts"
   },
   "keywords": [],
   "author": "",

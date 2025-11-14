@@ -51,26 +51,20 @@ export const BOOKMAKERS = [
  * Total must sum to 1.0 for proper weighted averaging.
  */
 export const BOOKMAKER_WEIGHTS: Record<string, number> = {
-  // Tier 1: Core sharp books (0.80 total)
+  // Tier 1: Core sharp books (0.72 total)
   pinnacle: 0.4, // Gold standard for sharp lines
-  betonlineag: 0.2, // Reduced juice, sharp
-  betanysports: 0.1, // Sharp, good limits
-  lowvig: 0.1, // Low vig specialist
+  marathonbet: 0.15, // Low-margin Euro sharp book
+  betonlineag: 0.1, // Competitive odds and reduced juice
+  betanysports: 0.07, // Sharp and high-limit
 
-  // Tier 2: Euro/regional books (0.15 total)
-  marathonbet: 0.05, // Sharp European book
-  unibet_uk: 0.0125, // Combined Unibet weight: 0.05 total
-  unibet_fr: 0.0125,
-  unibet_it: 0.0125,
-  unibet_nl: 0.0125,
-  unibet_se: 0.0,
-  sport888: 0.05, // Solid UK book
+  // Tier 2: Euro/regional books (0.07 total)
+  unibet_uk: 0.04, // Consolidated from all Unibet regions (UK/FR/IT/NL/SE)
+  sport888: 0.03, // Recreational UK-facing book, limited sharpness
 
-  // Tier 3: US recreational books (0.05 total)
-  draftkings: 0.02, // Market coverage
-  fanduel: 0.02, // Market coverage
-  betmgm: 0.005, // Caesars/William Hill US
-  williamhill_us: 0.005,
+  // Tier 3: US recreational books (0.21 total)
+  draftkings: 0.1, // Mixed book, moderate sharp influence
+  fanduel: 0.07, // Market coverage, moderately sharp
+  fanatics: 0.04, // Better than BetMGM; solid mid-tier US book
 };
 
 // ============================================================================
