@@ -10,6 +10,8 @@
 
 # IMPORTANT NOTE: Eventually, we will optimize for LATENCY, so keep that in mind as you build this. Nothing should be too slow.
 
+# IMPORTANT NOTE: Always refer to maker-taker-rules.md for specifics
+
 KEY POLYMARKET API INSIGHTS
 Three APIs we'll use:
 
@@ -115,11 +117,10 @@ If status === "CANCELLED": remove from tracking
 9. Maker Order Evaluator
 
 For each open maker order:
-Fetch fresh market data: GET /markets/slug/{marketSlug}
-Re-run analyzer for that specific market
+v1 (simpler): Use the latest full pipeline outputs and just filter for that marketSlug when evaluating maker orders.
 Compare: currentEV vs evAtPlacement
 Decision logic:
-If currentEV < 3% OR currentEV < evAtPlacement - 1%: cancel order
+If currentEV < 3% OR currentEV < evAtPlacement - 2%: cancel order
 If price needs to move >1 tick to stay competitive: cancel and repost
 If currentEV > evAtPlacement + 0.5% AND Kelly wants more size: place additional order
 Cancel via: DELETE /order/{orderID}
@@ -179,7 +180,18 @@ Pre-game (active=true, closed=false): normal trading
 Live (active=true, closed=false, but game started): cancel all orders for this market
 Closed (closed=true): stop trading, wait for resolution
 Resolved (check via CLOB API): redeem winning shares via POST /redeem or similar
-PHASE 6: Auto-Redemption (Day 8) 14. Resolution Monitor
+
+NOTES:
+
+- For market making, and someone fills half the order, we want to leave it up until it's all filled if it's still at a good price.
+- By "all filled", I mean (Kelly Sizing - Current Shares)
+- If it's at a bad price, then obviously take it down
+
+TO-DO
+
+- MAKE A GROUND TRUTH "RULES" file with all our "RULES" like the statement above and the existing maker-management stuff
+
+### PHASE 6: Auto-Redemption (Day 8) 14. Resolution Monitor
 
 Periodically check resolved markets (maybe every 5 minutes)
 For each resolved market where you have shares:

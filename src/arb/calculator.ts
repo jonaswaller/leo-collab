@@ -395,16 +395,6 @@ export function calculateWeightedConsensus(
         (b.outcome1Price <= -280 && b.outcome1Price >= -310),
     );
 
-  if (debugThis) {
-    console.log("\n" + "=".repeat(80));
-    console.log("🔍 DEBUG: De-vigging Calculation Breakdown");
-    console.log("=".repeat(80));
-    console.log(`Market Type: ${marketType}`);
-    console.log(`Method: ${marketType === "h2h" ? "Power/Shin" : "Probit"}`);
-    console.log(`Bookmakers: ${bookmakerOdds.length}`);
-    console.log("");
-  }
-
   for (const {
     bookmaker,
     outcome1Price,
@@ -437,12 +427,6 @@ export function calculateWeightedConsensus(
         const q1 = 1 / decimal1;
         const q2 = 1 / decimal2;
         const vig = ((q1 + q2 - 1) * 100).toFixed(2);
-        console.log(
-          `  ${bookmaker.padEnd(15)} | Odds: ${outcome1Price > 0 ? "+" : ""}${outcome1Price}/${outcome2Price > 0 ? "+" : ""}${outcome2Price} | Raw: ${(q1 * 100).toFixed(2)}%/${(q2 * 100).toFixed(2)}% (${vig}% vig)`,
-        );
-        console.log(
-          `  ${" ".repeat(15)} | Fair: ${(fair1 * 100).toFixed(2)}%/${(fair2 * 100).toFixed(2)}% | Weight: ${(weight * 100).toFixed(1)}% | Contrib: ${(fair1 * weight * 100).toFixed(2)}%`,
-        );
       }
     } else {
       // Spreads/totals: use Probit method
@@ -454,17 +438,6 @@ export function calculateWeightedConsensus(
     if (fair3 !== undefined) {
       weightedFair3 += fair3 * weight;
     }
-  }
-
-  if (debugThis) {
-    console.log("");
-    console.log(`📊 FINAL CONSENSUS:`);
-    console.log(`   Outcome 1: ${(weightedFair1 * 100).toFixed(2)}%`);
-    console.log(`   Outcome 2: ${(weightedFair2 * 100).toFixed(2)}%`);
-    console.log(
-      `   Total: ${((weightedFair1 + weightedFair2) * 100).toFixed(2)}%`,
-    );
-    console.log("=".repeat(80) + "\n");
   }
 
   if (is3Way) {

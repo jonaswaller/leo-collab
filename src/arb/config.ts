@@ -136,6 +136,13 @@ export const MAX_PER_EVENT_FRACTION = 0.07; // 7% of bankroll per event
 export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================
+// MAKER ORDER EVALUATION (PHASE 4)
+// ============================================================================
+
+// If currentEV drops more than this vs evAtPlacement, cancel
+export const MAKER_EVAL_EV_DROP = 0.02; // 2%
+
+// ============================================================================
 // MAKER STRATEGY
 // ============================================================================
 
