@@ -11,6 +11,7 @@
  *    - Keep orders that are still good
  *
  * Adheres to maker-taker-rules.md
+ * DRY_RUN=false npm run test-maker-full
  */
 
 import "dotenv/config";
