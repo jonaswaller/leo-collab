@@ -13,6 +13,7 @@ import {
   MAX_PER_MARKET_FRACTION,
   MAX_PER_EVENT_FRACTION,
 } from "../src/arb/config.js";
+import { enrichMarketsWithClobQuotes } from "../src/arb/orderbook.js";
 
 async function main() {
   console.log("== Polymarket Position / Exposure Debugger ==");
@@ -34,6 +35,7 @@ async function main() {
   // 2) Discover markets so we can enrich positions with Gamma metadata
   console.log("\nDiscovering Polymarket markets for enrichment...");
   const markets = await discoverPolymarkets();
+  await enrichMarketsWithClobQuotes(markets);
   console.log(`Discovered ${markets.length} markets from Gamma API`);
 
   const enriched = buildEnrichedPositions(markets, positions);

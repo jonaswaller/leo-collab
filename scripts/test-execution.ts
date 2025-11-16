@@ -24,6 +24,7 @@ import {
 } from "../src/arb/positions.js";
 import { setExposureFromSnapshot } from "../src/arb/calculator.js";
 import { executeTakerOrder, placeMakerOrder } from "../src/arb/execution.js";
+import { enrichMarketsWithClobQuotes } from "../src/arb/orderbook.js";
 
 async function main() {
   console.log("== Phase 3 Execution Dry-Run Test ==");
@@ -31,6 +32,7 @@ async function main() {
   // 1) Discovery
   console.log("\n📊 Discovering markets...");
   const markets = await discoverPolymarkets();
+  await enrichMarketsWithClobQuotes(markets);
   console.log(`   ✓ Found ${markets.length} markets`);
 
   // 2) Odds

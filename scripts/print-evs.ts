@@ -16,12 +16,14 @@ import {
   fetchOpenOrders,
   computeCapitalSummary,
 } from "../src/arb/positions.js";
+import { enrichMarketsWithClobQuotes } from "../src/arb/orderbook.js";
 
 async function main() {
   console.log("📊 Computing EVs for all matched markets...\n");
 
   // Step 1: Discover Polymarket markets
   const markets = await discoverPolymarkets();
+  await enrichMarketsWithClobQuotes(markets);
 
   // Step 2: Fetch sportsbook odds
   const oddsData = await fetchOddsForMarkets(markets);

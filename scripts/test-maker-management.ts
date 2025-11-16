@@ -28,6 +28,7 @@ import { setExposureFromSnapshot } from "../src/arb/calculator.js";
 import { registerMakerOrder } from "../src/arb/maker-registry.js";
 import { evaluateMakerOrders } from "../src/arb/maker-management.js";
 import { MakerOpportunity } from "../src/arb/types.js";
+import { enrichMarketsWithClobQuotes } from "../src/arb/orderbook.js";
 
 async function main() {
   console.log("== Phase 4 Maker Management Dry-Run Test ==");
@@ -35,6 +36,7 @@ async function main() {
   // 1) Discovery
   console.log("\n📊 Discovering markets...");
   const markets = await discoverPolymarkets();
+  await enrichMarketsWithClobQuotes(markets);
   console.log(`   ✓ Found ${markets.length} markets`);
 
   // 2) Odds

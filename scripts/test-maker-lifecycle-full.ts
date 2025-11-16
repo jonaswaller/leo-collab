@@ -131,9 +131,7 @@ async function placeInitialMakers(): Promise<void> {
   // Step 5: Analyze opportunities
   console.log("\n📈 Analyzing opportunities...");
   const opportunities = analyzeOpportunities(matched, capital.totalCapitalUSD);
-  console.log(
-    `   ✓ Found ${opportunities.makers.length} maker opportunities`,
-  );
+  console.log(`   ✓ Found ${opportunities.makers.length} maker opportunities`);
 
   if (opportunities.makers.length === 0) {
     console.log("   ❌ No maker opportunities found. Exiting.");
@@ -141,9 +139,7 @@ async function placeInitialMakers(): Promise<void> {
   }
 
   // Step 6: Place up to MAX_MAKERS_TO_PLACE maker orders
-  console.log(
-    `\n💎 Placing up to ${MAX_MAKERS_TO_PLACE} maker orders...`,
-  );
+  console.log(`\n💎 Placing up to ${MAX_MAKERS_TO_PLACE} maker orders...`);
 
   let placedCount = 0;
   for (const maker of opportunities.makers) {
@@ -184,7 +180,7 @@ async function placeInitialMakers(): Promise<void> {
         console.log(
           `             EV: ${(maker.ev * 100).toFixed(2)}% | Size: ${sharesToBuy.toFixed(2)} shares @ ${(maker.targetPrice * 100).toFixed(1)}%`,
         );
-        
+
         // In dry-run, simulate order ID for tracking
         const fakeOrderId = `dry-run-${Date.now()}-${placedCount}`;
         registerMakerOrder(fakeOrderId, adjustedMaker, result.preview);
@@ -222,7 +218,7 @@ async function placeInitialMakers(): Promise<void> {
   }
 
   console.log(`\n✅ Placed ${placedCount} maker orders`);
-  
+
   const tracked = getTrackedMakerOrders();
   console.log(`\n📋 Currently tracking ${tracked.length} maker orders:`);
   for (const order of tracked) {
@@ -245,7 +241,7 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
   console.log("=".repeat(80));
 
   const tracked = getTrackedMakerOrders();
-  
+
   if (tracked.length === 0) {
     console.log("\n⚠️  No maker orders to evaluate. Exiting.");
     return;
@@ -285,9 +281,7 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
     openOrders,
   );
 
-  console.log(
-    `   ✓ Total capital: $${capital.totalCapitalUSD.toFixed(2)}`,
-  );
+  console.log(`   ✓ Total capital: $${capital.totalCapitalUSD.toFixed(2)}`);
 
   const enrichedPositions = buildEnrichedPositions(markets, positions);
   const positionMap = buildPositionMap(enrichedPositions);
@@ -295,9 +289,7 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
   // Step 5: Analyze opportunities
   console.log("\n📈 Analyzing opportunities...");
   const opportunities = analyzeOpportunities(matched, capital.totalCapitalUSD);
-  console.log(
-    `   ✓ Found ${opportunities.makers.length} maker opportunities`,
-  );
+  console.log(`   ✓ Found ${opportunities.makers.length} maker opportunities`);
 
   // Step 6: Evaluate existing maker orders
   console.log("\n🔍 Evaluating existing maker orders...");
@@ -425,7 +417,7 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
             console.log(
               `   [DRY RUN] Would replace ${repl.oldOrderId} with new order for ${maker.marketSlug} (${sharesToBuy.toFixed(2)} shares @ ${(maker.targetPrice * 100).toFixed(1)}%)`,
             );
-            
+
             // In dry-run, simulate new order ID
             const fakeOrderId = `dry-run-replacement-${Date.now()}`;
             registerMakerOrder(fakeOrderId, adjustedMaker, result.preview);
@@ -458,7 +450,9 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
 
   // Show final state
   const finalTracked = getTrackedMakerOrders();
-  console.log(`\n📋 After evaluation: ${finalTracked.length} maker orders tracked`);
+  console.log(
+    `\n📋 After evaluation: ${finalTracked.length} maker orders tracked`,
+  );
   for (const order of finalTracked) {
     console.log(
       `   - ${order.orderId.substring(0, 12)}... | ${order.marketSlug}`,
@@ -506,7 +500,9 @@ async function main() {
 
     const remainingTracked = getTrackedMakerOrders();
     if (remainingTracked.length === 0) {
-      console.log("\n✅ All maker orders have been filled or cancelled. Test complete.");
+      console.log(
+        "\n✅ All maker orders have been filled or cancelled. Test complete.",
+      );
       break;
     }
 
@@ -524,8 +520,10 @@ async function main() {
   console.log("=".repeat(80));
 
   const finalTracked = getTrackedMakerOrders();
-  console.log(`\n📊 Final state: ${finalTracked.length} maker orders still tracked`);
-  
+  console.log(
+    `\n📊 Final state: ${finalTracked.length} maker orders still tracked`,
+  );
+
   if (finalTracked.length > 0) {
     console.log("\n📋 Remaining orders:");
     for (const order of finalTracked) {

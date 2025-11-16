@@ -20,6 +20,7 @@ import {
   buildExposureSnapshotsFromPositions,
 } from "../src/arb/positions.js";
 import { setExposureFromSnapshot } from "../src/arb/calculator.js";
+import { enrichMarketsWithClobQuotes } from "../src/arb/orderbook.js";
 
 async function main() {
   console.log("🧪 Testing full arbitrage pipeline...\n");
@@ -29,6 +30,7 @@ async function main() {
   console.log("\n📊 Step 1: Discovering Polymarket markets...");
   const startDiscovery = Date.now();
   const markets = await discoverPolymarkets();
+  await enrichMarketsWithClobQuotes(markets);
   const discoveryTime = ((Date.now() - startDiscovery) / 1000).toFixed(1);
   console.log(`   ✓ Found ${markets.length} markets in ${discoveryTime}s\n`);
 
