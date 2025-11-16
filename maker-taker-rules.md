@@ -11,7 +11,7 @@ This file defines the core execution rules for taker and maker orders. The code 
 
 - **Order type & slippage**
   - All taker orders are **limit orders**, never true market orders.
-  - Use *FAK** (at specific price, if you can’t do this with FAK, use GTC and cancel it soon after) so:
+  - Use \*FAK\*\* (at specific price, if you can’t do this with FAK, use GTC and cancel it soon after) so:
     - Attempt to fill at full order size (Kelly Rec.), this will buy as many shares as available, then cancel the leftover order on the book. Remember, we don’t want to leave any take orders on the market; they are intended for immediate execution.
     - We never accept any price worse than our own limit → **no slippage**.
 
@@ -64,8 +64,8 @@ This file defines the core execution rules for taker and maker orders. The code 
     - **Cancel** if EV has deteriorated too much:
       - `currentEV < evAtPlacement - MAKER_EVAL_EV_DROP` (currently 2%).
 - These will be reposed during the next model run.
-    - Otherwise, EV is acceptable and we may keep the order, subject to best-price rules below.
- - Also cancel if the order cannot be matched to a maker opportunity, as it is considered out of model.
+  - Otherwise, EV is acceptable and we may keep the order, subject to best-price rules below.
+- Also cancel if the order cannot be matched to a maker opportunity, as it is considered out of model.
 
 - **Best-price rules**
   - We treat an order as **outbid** when:
@@ -136,13 +136,13 @@ This file defines the core execution rules for taker and maker orders. The code 
 - Introduce time-based rules:
   - Tighten or loosen margins as time-to-game decreases (e.g., adaptive margins for games far out).
 - Improve rate-limiting and retry strategies for Data API `/positions` and Gamma endpoints to avoid 429s.
--Exposure Neutralization / Hedging
-If you already hold shares of one side (Team A), and the opposite side (Team B) becomes available at any EV > 0%, execute a balancing trade.
-Behavior:
-	•	Buy Team B up to the same notional size as your Team A exposure (or until liquidity is exhausted).
-	•	This locks in a spread profit and closes the position early.
-	•	Once closed, release that capital and re-deploy to the next opportunity.
-Purpose:
-	•	Reduces variance / drawdown risk.
-	•	Converts open directional exposure into immediate profit.
-	•	Keeps bankroll fully active and compounding.
+  -Exposure Neutralization / Hedging
+  If you already hold shares of one side (Team A), and the opposite side (Team B) becomes available at any EV > 0%, execute a balancing trade.
+  Behavior:
+  • Buy Team B up to the same notional size as your Team A exposure (or until liquidity is exhausted).
+  • This locks in a spread profit and closes the position early.
+  • Once closed, release that capital and re-deploy to the next opportunity.
+  Purpose:
+  • Reduces variance / drawdown risk.
+  • Converts open directional exposure into immediate profit.
+  • Keeps bankroll fully active and compounding.

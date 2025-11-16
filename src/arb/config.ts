@@ -143,6 +143,13 @@ export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come fr
 export const MAKER_EVAL_EV_DROP = 0.02; // 2%
 
 // ============================================================================
+// MAIN LOOP POLLING (PHASE 5)
+// ============================================================================
+
+// Fixed polling interval for all markets (in milliseconds)
+export const POLLING_INTERVAL_MS = 15_000; // 15 seconds
+
+// ============================================================================
 // MAKER STRATEGY
 // ============================================================================
 

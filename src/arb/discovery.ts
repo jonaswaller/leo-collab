@@ -19,7 +19,7 @@ import {
 // ============================================================================
 
 const MIN_LIQUIDITY = 0;
-const HOURS_AHEAD = 12;
+const HOURS_AHEAD = 18;
 const MAX_CONCURRENT = 20; // Process 20 at a time
 const REQUEST_DELAY_MS = 100; // 100ms between request batches = 10 req/s sustained
 

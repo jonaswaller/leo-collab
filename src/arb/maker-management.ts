@@ -12,6 +12,7 @@
 
 import { OpenOrder } from "@polymarket/clob-client";
 import { MakerOpportunity } from "./types.js";
+import type { BestPrices } from "./orderbook.js";
 import {
   TrackedMakerOrder,
   getTrackedMakerOrders,
@@ -72,6 +73,7 @@ export interface MakerOrderDecisionDetail {
  * Evaluate currently tracked maker orders against:
  * - Current live open orders (from CLOB)
  * - Current maker opportunities (from analyzer)
+ * - Optional live best bid prices from the CLOB orderbook
  *
  * Returns a set of decisions. The caller should:
  * - Cancel orders in cancelOrderIds
@@ -80,6 +82,7 @@ export interface MakerOrderDecisionDetail {
 export function evaluateMakerOrders(
   currentMakers: MakerOpportunity[],
   openOrders: OpenOrder[],
+  liveBestPrices?: Map<string, BestPrices>,
 ): MakerEvaluationDecision {
   const tracked = getTrackedMakerOrders();
 
@@ -157,10 +160,16 @@ export function evaluateMakerOrders(
     const evAtPlacement = trackedOrder.evAtPlacement;
 
     const openPrice = parseFloat(open.price);
-    const currentBid = currentOpp.currentBid ?? openPrice;
     const tickSize = currentOpp.tickSize;
 
-    const outbidBy = currentBid - openPrice;
+    // Prefer live best bid from the CLOB orderbook; fall back to analyzer/Gamma.
+    const live = liveBestPrices?.get(trackedOrder.tokenId);
+    const bestBidSource =
+      live && live.bestBid !== null && Number.isFinite(live.bestBid)
+        ? live.bestBid
+        : (currentOpp.currentBid ?? openPrice);
+
+    const outbidBy = bestBidSource - openPrice;
     const outbidByAtLeastOneTick = tickSize > 0 && outbidBy >= tickSize - 1e-9;
 
     // Minimum EV is market-type specific, based on MAKER_MARGINS config
@@ -194,21 +203,43 @@ export function evaluateMakerOrders(
       );
     }
 
-    // If someone has outbid us by at least one tick AND EV is still good,
-    // we want to cancel and consider reposting at the new target price.
+    // If someone has outbid us by at least one tick:
+    // - We ALWAYS cancel the stale order (we never leave non-best bids up).
+    // - We ONLY repost if:
+    //     * EV is still acceptable, AND
+    //     * The analyzer's target price is at least as aggressive as bestBid
+    //       (i.e., we are willing to match or beat bestBid without violating
+    //       our EV/margin constraints).
     if (!evTooLow && !evDroppedTooMuch && outbidByAtLeastOneTick) {
       cancelOrderIds.push(trackedOrder.orderId);
-      action = "cancel_and_replace";
-      reasons.push(
-        `Outbid by at least one tick (currentBid ${currentBid.toFixed(4)} vs our ${openPrice.toFixed(4)}).`,
-      );
 
-      // Only consider a replacement if the analyzer still likes this market.
-      if (currentEV >= minEV) {
+      const willingToMatchBest = bestBidSource <= currentOpp.targetPrice + 1e-9;
+
+      if (currentEV >= minEV && willingToMatchBest) {
+        action = "cancel_and_replace";
+        reasons.push(
+          `Outbid by at least one tick (bestBid ${bestBidSource.toFixed(
+            4,
+          )} vs our ${openPrice.toFixed(
+            4,
+          )}); reposting at analyzer target price.`,
+        );
+
         replacementMakers.push({
           oldOrderId: trackedOrder.orderId,
           opportunity: currentOpp,
         });
+      } else {
+        action = "cancel";
+        reasons.push(
+          `Outbid by at least one tick (bestBid ${bestBidSource.toFixed(
+            4,
+          )} vs our ${openPrice.toFixed(
+            4,
+          )}) but analyzer target ${currentOpp.targetPrice.toFixed(
+            4,
+          )} is below bestBid or EV no longer supports matching; cancelling without repost.`,
+        );
       }
     }
 
