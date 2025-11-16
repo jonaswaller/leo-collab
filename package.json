@@ -19,7 +19,7 @@
     "test-execution": "tsx scripts/test-execution.ts",
     "test-order-monitor": "tsx scripts/test-order-monitor.ts",
     "test-maker-management": "tsx scripts/test-maker-management.ts",
-    "test-maker-lifecycle": "tsx scripts/test-maker-lifecycle.ts"
+    "test-maker-full": "tsx scripts/test-maker-lifecycle-full.ts"
   },
   "keywords": [],
   "author": "",
