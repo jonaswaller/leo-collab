@@ -1,17 +1,19 @@
 /**
- * Full Maker Lifecycle Test
+ * Full Maker Lifecycle Test (v2)
  *
- * This script tests the complete maker order lifecycle:
+ * This script tests the complete maker order lifecycle in a way that closely
+ * mirrors the live trading loop:
  * 1. Discover markets and analyze opportunities
- * 2. Place up to 5 maker orders
- * 3. Run 5 polling cycles (15s each) to test maker management:
- *    - Evaluate existing orders
- *    - Cancel orders that no longer meet EV thresholds
- *    - Replace orders that are outbid
- *    - Keep orders that are still good
+ * 2. Place an initial batch of maker orders
+ * 3. Run several polling cycles to:
+ *    - Evaluate existing maker orders (keep/cancel) per maker-taker-rules.md
+ *    - Place a small subset of new maker orders at current analyzer prices
+ *
+ * This script ALWAYS runs in live mode (no dry run). It will place and cancel
+ * real orders on Polymarket. Use with care.
  *
  * Adheres to maker-taker-rules.md
- * DRY_RUN=false npm run test-maker-full
+ * npm run test-maker-full
  */
 
 import "dotenv/config";
@@ -44,11 +46,23 @@ import {
 } from "../src/arb/orderbook.js";
 import { POLLING_INTERVAL_MS } from "../src/arb/config.js";
 
+// Simple ANSI color helpers for clearer logs (no emojis).
+const RESET = "\x1b[0m";
+const BRIGHT = "\x1b[1m";
+const DIM = "\x1b[2m";
+const FG_GREEN = "\x1b[32m";
+const FG_YELLOW = "\x1b[33m";
+const FG_CYAN = "\x1b[36m";
+const FG_RED = "\x1b[31m";
+const FG_MAGENTA = "\x1b[35m";
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
 
-const DRY_RUN = process.env.DRY_RUN !== "false"; // Default to dry-run
+// IMPORTANT: This test script always runs in LIVE mode (no dry run).
+// It will place and cancel real orders on Polymarket.
+const DRY_RUN = false;
 const MAX_MAKERS_TO_PLACE = 5; // Place up to 5 maker orders
 const NUM_POLLING_CYCLES = 5; // Run 5 polling cycles
 
@@ -76,11 +90,11 @@ function buildPositionMap(
 
 async function placeInitialMakers(): Promise<void> {
   console.log("\n" + "=".repeat(80));
-  console.log("INITIAL SETUP: PLACING MAKER ORDERS");
+  console.log(`${BRIGHT}INITIAL SETUP: PLACING INITIAL MAKER ORDERS${RESET}`);
   console.log("=".repeat(80));
 
   // Step 1: Discover markets
-  console.log("\n📊 Discovering Polymarket markets...");
+  console.log(`\n${FG_CYAN}STEP 1: Discovering Polymarket markets...${RESET}`);
   const markets = await discoverPolymarkets();
   await enrichMarketsWithClobQuotes(markets);
   console.log(`   ✓ Found ${markets.length} markets`);
@@ -91,12 +105,12 @@ async function placeInitialMakers(): Promise<void> {
   }
 
   // Step 2: Fetch odds
-  console.log("\n📡 Fetching sportsbook odds...");
+  console.log(`\n${FG_CYAN}STEP 2: Fetching sportsbook odds...${RESET}`);
   const oddsData = await fetchOddsForMarkets(markets);
   console.log(`   ✓ Fetched odds`);
 
   // Step 3: Match markets
-  console.log("\n🔗 Matching markets...");
+  console.log(`\n${FG_CYAN}STEP 3: Matching markets...${RESET}`);
   const matched = matchMarkets(markets, oddsData);
   const matchedCount = matched.filter(
     (m) => Object.keys(m.sportsbooks).length > 0,
@@ -104,7 +118,7 @@ async function placeInitialMakers(): Promise<void> {
   console.log(`   ✓ Matched ${matchedCount}/${matched.length} markets`);
 
   // Step 4: Get capital & positions
-  console.log("\n💰 Computing capital & positions...");
+  console.log(`\n${FG_CYAN}STEP 4: Computing capital & positions...${RESET}`);
   const wallet = await fetchWalletState();
   const positions = await fetchCurrentPositions();
   const openOrders = await fetchOpenOrders();
@@ -129,7 +143,7 @@ async function placeInitialMakers(): Promise<void> {
   const positionMap = buildPositionMap(enrichedPositions);
 
   // Step 5: Analyze opportunities
-  console.log("\n📈 Analyzing opportunities...");
+  console.log(`\n${FG_CYAN}STEP 5: Analyzing opportunities...${RESET}`);
   const opportunities = analyzeOpportunities(matched, capital.totalCapitalUSD);
   console.log(`   ✓ Found ${opportunities.makers.length} maker opportunities`);
 
@@ -139,7 +153,9 @@ async function placeInitialMakers(): Promise<void> {
   }
 
   // Step 6: Place up to MAX_MAKERS_TO_PLACE maker orders
-  console.log(`\n💎 Placing up to ${MAX_MAKERS_TO_PLACE} maker orders...`);
+  console.log(
+    `\n${FG_CYAN}STEP 6: Placing up to ${MAX_MAKERS_TO_PLACE} initial maker orders...${RESET}`,
+  );
 
   let placedCount = 0;
   for (const maker of opportunities.makers) {
@@ -155,7 +171,9 @@ async function placeInitialMakers(): Promise<void> {
     // Skip if we already have enough shares
     if (sharesToBuy < maker.minOrderSize) {
       console.log(
-        `   ⏭️  Skipping ${maker.marketSlug} (${maker.outcomeName}): already own ${currentShares.toFixed(2)} shares`,
+        `   [SKIP] ${maker.marketSlug} (${maker.outcomeName}): already own ${currentShares.toFixed(
+          2,
+        )} shares`,
       );
       continue;
     }
@@ -173,38 +191,28 @@ async function placeInitialMakers(): Promise<void> {
     try {
       const result = await placeMakerOrder(adjustedMaker, { dryRun: DRY_RUN });
 
-      if (DRY_RUN) {
+      if (result.orderId) {
         console.log(
-          `   [DRY RUN] Would place maker: ${maker.marketSlug} (${maker.outcomeName})`,
+          `   ${FG_GREEN}PLACED${RESET} ${maker.marketSlug} (${maker.outcomeName})`,
         );
         console.log(
-          `             EV: ${(maker.ev * 100).toFixed(2)}% | Size: ${sharesToBuy.toFixed(2)} shares @ ${(maker.targetPrice * 100).toFixed(1)}%`,
+          `      Order ID: ${result.orderId} | Size: ${sharesToBuy.toFixed(
+            2,
+          )} shares @ ${(maker.targetPrice * 100).toFixed(1)}%`,
+        );
+        console.log(
+          `      EV: ${(maker.ev * 100).toFixed(2)}% | Fair: ${(
+            maker.fairProb * 100
+          ).toFixed(1)}%`,
         );
 
-        // In dry-run, simulate order ID for tracking
-        const fakeOrderId = `dry-run-${Date.now()}-${placedCount}`;
-        registerMakerOrder(fakeOrderId, adjustedMaker, result.preview);
+        // Register for tracking
+        registerMakerOrder(result.orderId, adjustedMaker, result.preview);
         placedCount++;
       } else {
-        if (result.orderId) {
-          console.log(
-            `   ✅ Maker placed: ${maker.marketSlug} (${maker.outcomeName})`,
-          );
-          console.log(
-            `      Order ID: ${result.orderId} | Size: ${sharesToBuy.toFixed(2)} shares @ ${(maker.targetPrice * 100).toFixed(1)}%`,
-          );
-          console.log(
-            `      EV: ${(maker.ev * 100).toFixed(2)}% | Fair: ${(maker.fairProb * 100).toFixed(1)}%`,
-          );
-
-          // Register for tracking
-          registerMakerOrder(result.orderId, adjustedMaker, result.preview);
-          placedCount++;
-        } else {
-          console.log(
-            `   ⚠️  Maker placement failed: ${maker.marketSlug} (${maker.outcomeName})`,
-          );
-        }
+        console.log(
+          `   ${FG_YELLOW}WARN${RESET} Maker placement failed: ${maker.marketSlug} (${maker.outcomeName})`,
+        );
       }
     } catch (error: any) {
       console.error(
@@ -217,7 +225,9 @@ async function placeInitialMakers(): Promise<void> {
     await sleep(100);
   }
 
-  console.log(`\n✅ Placed ${placedCount} maker orders`);
+  console.log(
+    `\n${FG_GREEN}INITIAL PLACEMENT COMPLETE${RESET} - placed ${placedCount} maker orders`,
+  );
 
   const tracked = getTrackedMakerOrders();
   console.log(`\n📋 Currently tracking ${tracked.length} maker orders:`);
@@ -240,31 +250,22 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
   console.log(`POLLING CYCLE ${cycleNumber} - ${new Date().toISOString()}`);
   console.log("=".repeat(80));
 
-  const tracked = getTrackedMakerOrders();
-
-  if (tracked.length === 0) {
-    console.log("\n⚠️  No maker orders to evaluate. Exiting.");
-    return;
-  }
-
-  console.log(`\n📋 Currently tracking ${tracked.length} maker orders`);
-
   // Step 1: Discover markets (to get fresh data)
-  console.log("\n📊 Discovering Polymarket markets...");
+  console.log(`\n${FG_CYAN}STEP 1: Discovering Polymarket markets...${RESET}`);
   const markets = await discoverPolymarkets();
   await enrichMarketsWithClobQuotes(markets);
   console.log(`   ✓ Found ${markets.length} markets`);
 
   // Step 2: Fetch odds
-  console.log("\n📡 Fetching sportsbook odds...");
+  console.log(`\n${FG_CYAN}STEP 2: Fetching sportsbook odds...${RESET}`);
   const oddsData = await fetchOddsForMarkets(markets);
 
   // Step 3: Match markets
-  console.log("\n🔗 Matching markets...");
+  console.log(`\n${FG_CYAN}STEP 3: Matching markets...${RESET}`);
   const matched = matchMarkets(markets, oddsData);
 
   // Step 4: Get capital & positions
-  console.log("\n💰 Computing capital & positions...");
+  console.log(`\n${FG_CYAN}STEP 4: Computing capital & positions...${RESET}`);
   const wallet = await fetchWalletState();
   const positions = await fetchCurrentPositions();
   const openOrders = await fetchOpenOrders();
@@ -287,14 +288,56 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
   const positionMap = buildPositionMap(enrichedPositions);
 
   // Step 5: Analyze opportunities
-  console.log("\n📈 Analyzing opportunities...");
+  console.log(`\n${FG_CYAN}STEP 5: Analyzing opportunities...${RESET}`);
   const opportunities = analyzeOpportunities(matched, capital.totalCapitalUSD);
   console.log(`   ✓ Found ${opportunities.makers.length} maker opportunities`);
 
   // Step 6: Evaluate existing maker orders
-  console.log("\n🔍 Evaluating existing maker orders...");
+  console.log(
+    `\n${FG_CYAN}STEP 6: Evaluating existing maker orders...${RESET}`,
+  );
 
   try {
+    // Build tokenId -> MakerOpportunity lookup so we can match open orders
+    // to current opportunities.
+    const makersByToken = new Map<string, MakerOpportunity>();
+    for (const m of opportunities.makers) {
+      makersByToken.set(m.tokenId, m);
+    }
+
+    // Fetch current open orders from CLOB
+    // Fetch live best bid/ask for all tracked maker tokenIds
+    const openOrders = await fetchOpenOrders();
+
+    // Seed / refresh registry from ALL open maker orders that match current
+    // MakerOpportunity tokenIds, so the test fully reflects live behaviour.
+    for (const o of openOrders) {
+      const opp = makersByToken.get(o.asset_id);
+      if (!opp) continue;
+
+      const price = parseFloat(o.price ?? "0");
+      const size = parseFloat(o.original_size ?? "0");
+
+      registerMakerOrder(o.id, opp, {
+        tokenID: opp.tokenId,
+        side: "BUY" as any,
+        price,
+        size,
+        orderType: "GTC" as any,
+      });
+    }
+
+    const tracked = getTrackedMakerOrders();
+
+    if (tracked.length === 0) {
+      console.log("\nNo maker orders to evaluate in this cycle.");
+      return;
+    }
+
+    console.log(
+      `\nCurrently tracking ${tracked.length} maker orders before evaluation`,
+    );
+
     // Fetch live best bid/ask for all tracked maker tokenIds
     const tokenIds = tracked.map((t) => t.tokenId);
     const liveBestPrices = await fetchBestPricesForTokens(tokenIds);
@@ -316,7 +359,7 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
 
     // Log summary
     console.log(
-      `   Decisions: ${decision.cancelOrderIds.length} to cancel, ${decision.replacementMakers.length} to replace, ${decision.cleanedUpOrderIds.length} cleaned up`,
+      `   Evaluation decisions: ${decision.cancelOrderIds.length} to cancel, ${decision.cleanedUpOrderIds.length} cleaned up`,
     );
 
     // Log detailed reasoning
@@ -347,101 +390,26 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
     // Cancel orders
     if (decision.cancelOrderIds.length > 0) {
       console.log(
-        `\n   🗑️  Cancelling ${decision.cancelOrderIds.length} orders...`,
+        `\n   Cancelling ${decision.cancelOrderIds.length} orders on CLOB...`,
       );
 
-      if (DRY_RUN) {
-        for (const orderId of decision.cancelOrderIds) {
-          console.log(`   [DRY RUN] Would cancel order: ${orderId}`);
-          // In dry-run, actually remove from tracking to simulate
-          removeMakerOrder(orderId);
-        }
-      } else {
-        const client = await getClobClient();
+      const client = await getClobClient();
 
-        for (const orderId of decision.cancelOrderIds) {
-          try {
-            await client.cancelOrder({ orderID: orderId });
-            console.log(`   ✅ Cancelled order: ${orderId}`);
-
-            // Remove from tracking
-            removeMakerOrder(orderId);
-
-            await sleep(50);
-          } catch (error: any) {
-            console.error(`   ❌ Error cancelling ${orderId}:`, error.message);
-          }
-        }
-      }
-    }
-
-    // Place replacement orders
-    if (decision.replacementMakers.length > 0) {
-      console.log(
-        `\n   🔄 Placing ${decision.replacementMakers.length} replacement orders...`,
-      );
-
-      for (const repl of decision.replacementMakers) {
-        const maker = repl.opportunity;
-
-        // Adjust size for existing position
-        const currentPosition = positionMap.get(maker.tokenId);
-        const currentShares = currentPosition?.shares || 0;
-        const targetShares = maker.kellySize.constrainedShares;
-        const sharesToBuy = Math.max(0, targetShares - currentShares);
-
-        // Skip if we already have enough shares
-        if (sharesToBuy < maker.minOrderSize) {
-          console.log(
-            `   ⏭️  Skipping replacement for ${maker.marketSlug}: already own ${currentShares.toFixed(2)} shares`,
-          );
-          continue;
-        }
-
-        // Create adjusted opportunity with correct size
-        const adjustedMaker: MakerOpportunity = {
-          ...maker,
-          kellySize: {
-            ...maker.kellySize,
-            constrainedShares: sharesToBuy,
-            constrainedSizeUSD: sharesToBuy * maker.targetPrice,
-          },
-        };
-
+      for (const orderId of decision.cancelOrderIds) {
         try {
-          const result = await placeMakerOrder(adjustedMaker, {
-            dryRun: DRY_RUN,
-          });
+          await client.cancelOrder({ orderID: orderId });
+          console.log(`   ${FG_GREEN}CANCELLED${RESET} order: ${orderId}`);
 
-          if (DRY_RUN) {
-            console.log(
-              `   [DRY RUN] Would replace ${repl.oldOrderId} with new order for ${maker.marketSlug} (${sharesToBuy.toFixed(2)} shares @ ${(maker.targetPrice * 100).toFixed(1)}%)`,
-            );
+          // Remove from tracking
+          removeMakerOrder(orderId);
 
-            // In dry-run, simulate new order ID
-            const fakeOrderId = `dry-run-replacement-${Date.now()}`;
-            registerMakerOrder(fakeOrderId, adjustedMaker, result.preview);
-          } else {
-            if (result.orderId) {
-              console.log(
-                `   ✅ Replaced ${repl.oldOrderId} with ${result.orderId}`,
-              );
-              console.log(
-                `      ${maker.marketSlug} | ${sharesToBuy.toFixed(2)} shares @ ${(maker.targetPrice * 100).toFixed(1)}%`,
-              );
-
-              // Register new order
-              registerMakerOrder(result.orderId, adjustedMaker, result.preview);
-            }
-          }
+          await sleep(50);
         } catch (error: any) {
           console.error(
-            `   ❌ Error replacing order for ${maker.marketSlug}:`,
+            `${FG_RED}ERROR${RESET} cancelling ${orderId}:`,
             error.message,
           );
         }
-
-        await sleep(100);
       }
     }
   } catch (error: any) {
@@ -451,7 +419,7 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
   // Show final state
   const finalTracked = getTrackedMakerOrders();
   console.log(
-    `\n📋 After evaluation: ${finalTracked.length} maker orders tracked`,
+    `\nAfter evaluation: ${finalTracked.length} maker orders tracked`,
   );
   for (const order of finalTracked) {
     console.log(
@@ -466,20 +434,21 @@ async function runPollingCycle(cycleNumber: number): Promise<void> {
 
 async function main() {
   console.log("\n" + "=".repeat(80));
-  console.log("🧪 MAKER LIFECYCLE TEST");
+  console.log(`${BRIGHT}MAKER LIFECYCLE TEST (LIVE MODE)${RESET}`);
   console.log("=".repeat(80));
-  console.log(`Mode: ${DRY_RUN ? "DRY RUN (no real orders)" : "LIVE TRADING"}`);
+  console.log("Mode: LIVE TRADING (no dry run)");
   console.log(`Max makers to place: ${MAX_MAKERS_TO_PLACE}`);
   console.log(`Polling cycles: ${NUM_POLLING_CYCLES}`);
   console.log(`Polling interval: ${POLLING_INTERVAL_MS / 1000}s`);
   console.log("=".repeat(80));
 
-  if (!DRY_RUN) {
-    console.log("\n⚠️  WARNING: LIVE TRADING MODE ENABLED");
-    console.log("⚠️  Real orders will be placed on Polymarket");
-    console.log("⚠️  Press Ctrl+C within 5 seconds to abort...\n");
-    await sleep(5000);
-  }
+  console.log(
+    `\n${FG_RED}WARNING${RESET}: This script will place and cancel REAL orders on Polymarket.`,
+  );
+  console.log(
+    `${FG_RED}Press Ctrl+C within 5 seconds to abort if this is not intended.${RESET}\n`,
+  );
+  await sleep(5000);
 
   // Phase 1: Place initial maker orders
   await placeInitialMakers();
@@ -501,14 +470,14 @@ async function main() {
     const remainingTracked = getTrackedMakerOrders();
     if (remainingTracked.length === 0) {
       console.log(
-        "\n✅ All maker orders have been filled or cancelled. Test complete.",
+        `\n${FG_GREEN}All maker orders have been filled or cancelled. Test complete.${RESET}`,
       );
       break;
     }
 
     if (i < NUM_POLLING_CYCLES) {
       console.log(
-        `\n⏳ Sleeping for ${POLLING_INTERVAL_MS / 1000}s before next cycle...`,
+        `\nSleeping for ${POLLING_INTERVAL_MS / 1000}s before next cycle...`,
       );
       await sleep(POLLING_INTERVAL_MS);
     }
@@ -516,12 +485,12 @@ async function main() {
 
   // Final summary
   console.log("\n" + "=".repeat(80));
-  console.log("TEST COMPLETE");
+  console.log(`${BRIGHT}TEST COMPLETE${RESET}`);
   console.log("=".repeat(80));
 
   const finalTracked = getTrackedMakerOrders();
   console.log(
-    `\n📊 Final state: ${finalTracked.length} maker orders still tracked`,
+    `\nFinal state: ${finalTracked.length} maker orders still tracked`,
   );
 
   if (finalTracked.length > 0) {
@@ -536,7 +505,7 @@ async function main() {
     }
   }
 
-  console.log("\n✅ Test completed successfully!");
+  console.log(`\n${FG_GREEN}Test completed successfully.${RESET}`);
 }
 
 // Handle graceful shutdown

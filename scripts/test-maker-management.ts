@@ -132,18 +132,9 @@ async function main() {
   console.log("\nDecisions:");
   console.log("  Cancel these orderIds:", decision.cancelOrderIds);
   console.log(
-    "  Replacement makers (oldOrderId → marketSlug/outcome/targetPrice):",
+    "  Cleaned up (no longer open on CLOB):",
+    decision.cleanedUpOrderIds,
   );
-  for (const repl of decision.replacementMakers) {
-    const m = repl.opportunity;
-    console.log({
-      oldOrderId: repl.oldOrderId,
-      marketSlug: m.marketSlug,
-      outcomeName: m.outcomeName,
-      targetPrice: m.targetPrice,
-      ev: m.ev,
-    });
-  }
 
   if (decision.details.length > 0) {
     console.log("\nPer-order reasoning:");

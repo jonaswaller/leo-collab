@@ -41,11 +41,14 @@ export interface ExecutionResult {
 }
 
 /**
- * Execute a taker opportunity as a limit FOK order (no slippage).
+ * Execute a taker opportunity as a limit FAK (Fill-And-Kill / IOC) order.
  *
  * We:
  * - Use the Polymarket ask price as the limit (or tighter)
  * - Use Kelly-constrained size, respecting minOrderSize
+ * - Attempt to fill immediately as much size as is available at or better
+ *   than our limit; any unfilled remainder is cancelled and does not rest
+ *   on the book (no slippage, partial fills allowed).
  * - Default to dryRun = true for safety
  */
 export async function executeTakerOrder(
@@ -65,7 +68,7 @@ export async function executeTakerOrder(
 
   const price = opp.polymarketAsk; // already a valid tick from Gamma
   const side = Side.BUY; // TakerOpportunity is always hitting the ask (buying)
-  const orderType = OrderType.FOK; // Fill-or-kill, so no residuals
+  const orderType = OrderType.FAK; // Fill-And-Kill (IOC): partial fills OK, remainder cancelled
 
   const preview: ExecutionPreview = {
     tokenID: opp.tokenId,

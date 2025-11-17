@@ -27,15 +27,6 @@ export interface MakerEvaluationDecision {
   cancelOrderIds: string[];
 
   /**
-   * For some cancelled orders, we may want to place a replacement order
-   * using a fresh MakerOpportunity (e.g., we were outbid but still EV+).
-   */
-  replacementMakers: {
-    oldOrderId: string;
-    opportunity: MakerOpportunity;
-  }[];
-
-  /**
    * Tracked maker orders that are no longer live on the CLOB (matched/cancelled).
    * These are removed from the registry as part of evaluation.
    */
@@ -47,11 +38,7 @@ export interface MakerEvaluationDecision {
   details: MakerOrderDecisionDetail[];
 }
 
-export type MakerOrderAction =
-  | "keep"
-  | "cancel"
-  | "cancel_and_replace"
-  | "cleanup";
+export type MakerOrderAction = "keep" | "cancel" | "cleanup";
 
 export interface MakerOrderDecisionDetail {
   orderId: string;
@@ -77,7 +64,12 @@ export interface MakerOrderDecisionDetail {
  *
  * Returns a set of decisions. The caller should:
  * - Cancel orders in cancelOrderIds
- * - Optionally place replacement makers for replacementMakers
+ * - Remove cleanedUpOrderIds from any external tracking
+ *
+ * NOTE: v1 keeps evaluation and placement separate. This function never
+ * posts new orders; it only decides which existing makers to KEEP or CANCEL
+ * based on maker-taker-rules.md. New/updated maker orders should be placed
+ * in a separate phase using fresh MakerOpportunity[] from the analyzer.
  */
 export function evaluateMakerOrders(
   currentMakers: MakerOpportunity[],
@@ -97,10 +89,6 @@ export function evaluateMakerOrders(
   }
 
   const cancelOrderIds: string[] = [];
-  const replacementMakers: {
-    oldOrderId: string;
-    opportunity: MakerOpportunity;
-  }[] = [];
   const cleanedUpOrderIds: string[] = [];
   const details: MakerOrderDecisionDetail[] = [];
 
@@ -185,69 +173,84 @@ export function evaluateMakerOrders(
     const evDroppedTooMuch = currentEV < evAtPlacement - MAKER_EVAL_EV_DROP;
     const evDrop = currentEV - evAtPlacement;
 
+    // Kelly / partial-fill handling:
+    // We treat an order as "fully satisfied" for the current cycle when the
+    // filled shares meet or exceed the *current* Kelly target. In that case,
+    // we cancel any remaining live size even if EV is still attractive.
+    const currentKellyTarget = currentOpp.kellySize.constrainedShares;
+    const filledShares = parseFloat(open.size_matched || "0");
+    const fullySatisfied =
+      Number.isFinite(currentKellyTarget) &&
+      currentKellyTarget > 0 &&
+      filledShares >= currentKellyTarget - 1e-8;
+
     const reasons: string[] = [];
     let action: MakerOrderAction = "keep";
 
-    // If EV is too low or has deteriorated significantly, cancel.
-    if (evTooLow) {
+    if (fullySatisfied) {
       cancelOrderIds.push(trackedOrder.orderId);
       action = "cancel";
       reasons.push(
-        `EV ${currentEV.toFixed(4)} < minEV ${minEV.toFixed(4)} for market type.`,
+        `Filled shares ${filledShares.toFixed(
+          4,
+        )} >= current Kelly target ${currentKellyTarget.toFixed(
+          4,
+        )}; cancelling remaining live size.`,
       );
-    } else if (evDroppedTooMuch) {
+    } else if (outbidByAtLeastOneTick) {
+      // Outbid by >= 1 tick: always cancel stale order.
       cancelOrderIds.push(trackedOrder.orderId);
       action = "cancel";
-      reasons.push(
-        `EV dropped by ${evDrop.toFixed(4)} vs placement (threshold -${MAKER_EVAL_EV_DROP.toFixed(4)}).`,
-      );
-    }
-
-    // If someone has outbid us by at least one tick:
-    // - We ALWAYS cancel the stale order (we never leave non-best bids up).
-    // - We ONLY repost if:
-    //     * EV is still acceptable, AND
-    //     * The analyzer's target price is at least as aggressive as bestBid
-    //       (i.e., we are willing to match or beat bestBid without violating
-    //       our EV/margin constraints).
-    if (!evTooLow && !evDroppedTooMuch && outbidByAtLeastOneTick) {
-      cancelOrderIds.push(trackedOrder.orderId);
-
-      const willingToMatchBest = bestBidSource <= currentOpp.targetPrice + 1e-9;
-
-      if (currentEV >= minEV && willingToMatchBest) {
-        action = "cancel_and_replace";
+      if (evTooLow) {
         reasons.push(
           `Outbid by at least one tick (bestBid ${bestBidSource.toFixed(
             4,
-          )} vs our ${openPrice.toFixed(
+          )} vs our ${openPrice.toFixed(4)}) and EV ${currentEV.toFixed(
             4,
-          )}); reposting at analyzer target price.`,
+          )} < minEV ${minEV.toFixed(4)}; cancelling.`,
         );
-
-        replacementMakers.push({
-          oldOrderId: trackedOrder.orderId,
-          opportunity: currentOpp,
-        });
       } else {
-        action = "cancel";
         reasons.push(
           `Outbid by at least one tick (bestBid ${bestBidSource.toFixed(
             4,
           )} vs our ${openPrice.toFixed(
             4,
-          )}) but analyzer target ${currentOpp.targetPrice.toFixed(
-            4,
-          )} is below bestBid or EV no longer supports matching; cancelling without repost.`,
+          )}); cancelling. Any new maker order will be decided by the next analyzer cycle.`,
         );
       }
-    }
-
-    if (action === "keep") {
+    } else if (evTooLow) {
+      // Not outbid, but EV has fallen below our per-market-type minimum.
+      cancelOrderIds.push(trackedOrder.orderId);
+      action = "cancel";
+      reasons.push(
+        `EV ${currentEV.toFixed(4)} < minEV ${minEV.toFixed(
+          4,
+        )} for market type; cancelling.`,
+      );
+    } else if (evDroppedTooMuch) {
+      // Not outbid, EV still >= minEV but has deteriorated by more than our
+      // allowed drop; cancel and let the next cycle decide whether to repost.
+      cancelOrderIds.push(trackedOrder.orderId);
+      action = "cancel";
+      reasons.push(
+        `EV dropped by ${evDrop.toFixed(
+          4,
+        )} vs placement (threshold -${MAKER_EVAL_EV_DROP.toFixed(
+          4,
+        )}); cancelling.`,
+      );
+    } else {
+      // Keep: EV is acceptable, EV drop within tolerance, not outbid, and not
+      // yet fully satisfied vs current Kelly target.
+      action = "keep";
       reasons.push(
         `EV ${currentEV.toFixed(4)} >= minEV ${minEV.toFixed(
           4,
-        )} and EV drop ${evDrop.toFixed(4)} within tolerance; not outbid by >= 1 tick.`,
+        )}, EV drop ${evDrop.toFixed(
+          4,
+        )} within tolerance, not outbid by >= 1 tick, and filled shares ${filledShares.toFixed(
+          4,
+        )} < Kelly target ${currentKellyTarget.toFixed(4)}; keeping order live.`,
       );
     }
 
@@ -270,7 +273,6 @@ export function evaluateMakerOrders(
 
   return {
     cancelOrderIds,
-    replacementMakers,
     cleanedUpOrderIds,
     details,
   };

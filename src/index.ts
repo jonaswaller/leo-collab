@@ -261,33 +261,66 @@ async function placeNewMakers(
 // ============================================================================
 
 /**
- * Evaluate existing maker orders and cancel/replace as needed.
+ * Evaluate existing maker orders and cancel as needed.
  *
  * Per maker-taker-rules.md:
  * - Cancel if currentEV < minEV
  * - Cancel if EV dropped > 2% vs placement
- * - Cancel if outbid by >= 1 tick (and repost if EV still good)
+ * - Cancel if outbid by >= 1 tick
  * - Cancel if out-of-model (tokenId not in current opportunities)
+ * - Cancel remaining size once filledShares >= current-cycle Kelly target
+ *
+ * Any new maker orders (including "replacements") are handled by the
+ * placement phase using fresh MakerOpportunity[] from the analyzer.
  */
 async function evaluateExistingMakers(
   currentMakers: MakerOpportunity[],
   positionMap: Map<string, EnrichedPosition>,
   dryRun: boolean,
 ): Promise<void> {
-  const trackedOrders = getTrackedMakerOrders();
-
-  if (trackedOrders.length === 0) {
-    console.log("   No maker orders to evaluate.");
-    return;
-  }
-
-  console.log(
-    `\n🔍 Evaluating ${trackedOrders.length} existing maker orders...`,
-  );
-
   try {
+    // Build a lookup from tokenId -> MakerOpportunity so we can match
+    // open CLOB orders to current maker opportunities.
+    const makersByToken = new Map<string, MakerOpportunity>();
+    for (const m of currentMakers) {
+      makersByToken.set(m.tokenId, m);
+    }
+
     // Fetch current open orders from CLOB
     const openOrders = await fetchOpenOrders();
+
+    // Seed / refresh the maker registry from ALL open maker orders that match
+    // current MakerOpportunity tokenIds. This ensures that the bot always
+    // evaluates and manages every relevant open maker order each cycle,
+    // including those that may have been placed before this process started.
+    for (const o of openOrders) {
+      const opp = makersByToken.get(o.asset_id);
+      if (!opp) continue;
+
+      const price = parseFloat(o.price ?? "0");
+      const size = parseFloat(o.original_size ?? "0");
+
+      registerMakerOrder(o.id, opp, {
+        tokenID: opp.tokenId,
+        // This registry is only used for evaluation metadata; we don't rely
+        // on these enum values at runtime, so a string literal is sufficient.
+        side: "BUY" as any,
+        price,
+        size,
+        orderType: "GTC" as any,
+      });
+    }
+
+    const trackedOrders = getTrackedMakerOrders();
+
+    if (trackedOrders.length === 0) {
+      console.log("   No maker orders to evaluate.");
+      return;
+    }
+
+    console.log(
+      `\n🔍 Evaluating ${trackedOrders.length} existing maker orders...`,
+    );
 
     // Fetch live best bid/ask for all tracked maker tokenIds
     const tokenIds = trackedOrders.map((t) => t.tokenId);
@@ -315,7 +348,7 @@ async function evaluateExistingMakers(
 
     // Log summary
     console.log(
-      `   Decisions: ${decision.cancelOrderIds.length} to cancel, ${decision.replacementMakers.length} to replace, ${decision.cleanedUpOrderIds.length} cleaned up`,
+      `   Decisions: ${decision.cancelOrderIds.length} to cancel, ${decision.cleanedUpOrderIds.length} cleaned up`,
     );
 
     // Cancel orders
@@ -345,68 +378,6 @@ async function evaluateExistingMakers(
             console.error(`   ❌ Error cancelling ${orderId}:`, error.message);
           }
         }
-      }
-    }
-
-    // Place replacement orders
-    if (decision.replacementMakers.length > 0) {
-      console.log(
-        `\n   Placing ${decision.replacementMakers.length} replacement orders...`,
-      );
-
-      for (const repl of decision.replacementMakers) {
-        const maker = repl.opportunity;
-
-        // Adjust size for existing position (per maker-taker-rules.md)
-        const currentPosition = positionMap.get(maker.tokenId);
-        const currentShares = currentPosition?.shares || 0;
-        const targetShares = maker.kellySize.constrainedShares;
-        const sharesToBuy = Math.max(0, targetShares - currentShares);
-
-        // Skip if we already have enough shares
-        if (sharesToBuy < maker.minOrderSize) {
-          console.log(
-            `   ⏭️  Skipping replacement for ${maker.marketSlug} (${maker.outcomeName}): already own ${currentShares.toFixed(2)} shares (target: ${targetShares.toFixed(2)})`,
-          );
-          continue;
-        }
-
-        // Create adjusted opportunity with correct size
-        const adjustedMaker: MakerOpportunity = {
-          ...maker,
-          kellySize: {
-            ...maker.kellySize,
-            constrainedShares: sharesToBuy,
-            constrainedSizeUSD: sharesToBuy * maker.targetPrice,
-          },
-        };
-
-        try {
-          const result = await placeMakerOrder(adjustedMaker, { dryRun });
-
-          if (dryRun) {
-            console.log(
-              `   [DRY RUN] Would replace ${repl.oldOrderId} with new order for ${maker.marketSlug} (${sharesToBuy.toFixed(2)} shares)`,
-            );
-          } else {
-            if (result.orderId) {
-              console.log(
-                `   ✅ Replaced ${repl.oldOrderId} with ${result.orderId} (${sharesToBuy.toFixed(2)} shares)`,
-              );
-
-              // Register new order
-              registerMakerOrder(result.orderId, adjustedMaker, result.preview);
-            }
-          }
-        } catch (error: any) {
-          console.error(
-            `   ❌ Error replacing order for ${maker.marketSlug}:`,
-            error.message,
-          );
-        }
-
-        // Small delay between orders
-        await sleep(100);
       }
     }
 

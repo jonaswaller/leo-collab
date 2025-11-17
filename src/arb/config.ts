@@ -9,7 +9,7 @@
 // Polymarket Market Discovery
 // ============================================================================
 
-export const HOURS_AHEAD = 12;
+export const HOURS_AHEAD = 24;
 
 // ============================================================================
 // API CONFIGURATION
@@ -137,8 +137,8 @@ export const TAKER_MARGINS: Record<string, number> = {
 // ============================================================================
 
 export const KELLY_MULTIPLIER = 0.5; // Half Kelly (conservative)
-export const MAX_PER_MARKET_FRACTION = 0.03; // 3% of bankroll per market
-export const MAX_PER_EVENT_FRACTION = 0.07; // 7% of bankroll per event
+export const MAX_PER_MARKET_FRACTION = 0.03; // 3% of bankroll per market - enforced per order immediately
+export const MAX_PER_EVENT_FRACTION = 0.07; // 7% of bankroll per event - enforced only on ACTUAL position value, not on the sum of open orders
 export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================
