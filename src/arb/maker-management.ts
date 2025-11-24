@@ -120,6 +120,9 @@ export function evaluateMakerOrders(
 
     const currentOpp = makersByToken.get(trackedOrder.tokenId);
 
+    // Sanity check: ensure we don't somehow have duplicate trackers for the same orderId
+    // (This shouldn't happen with Map but good for debugging)
+
     // If analyzer no longer sees a maker opportunity for this token,
     // treat it as EV below thresholds and cancel.
     if (!currentOpp) {

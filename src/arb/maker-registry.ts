@@ -13,10 +13,13 @@ export interface TrackedMakerOrder {
   tokenId: string;
   marketSlug: string;
   eventSlug: string;
+  sport: string;
+  marketType: string;
   outcome: 1 | 2;
   targetPrice: number;
   size: number;
   evAtPlacement: number;
+  fairProbAtPlacement: number;
   placedAt: number; // ms since epoch
 }
 
@@ -40,10 +43,13 @@ export function registerMakerOrder(
     tokenId: opp.tokenId,
     marketSlug: opp.marketSlug,
     eventSlug: opp.eventSlug,
+    sport: opp.sport,
+    marketType: opp.marketType,
     outcome: opp.outcome,
     targetPrice: preview.price,
     size: preview.size,
     evAtPlacement: opp.ev,
+    fairProbAtPlacement: opp.fairProb,
     placedAt: now,
   };
 

@@ -42,6 +42,8 @@ import {
   fetchBestPricesForTokens,
   enrichMarketsWithClobQuotes,
 } from "./arb/orderbook.js";
+import { saveWager, updateWagerCLV } from "./storage/operations.js";
+import { trackMakerFills } from "./storage/tracking.js";
 
 // ============================================================================
 // CONFIGURATION
@@ -149,6 +151,23 @@ async function executeTakers(
           console.log(
             `      Order ID: ${result.orderId} | Size: ${sharesToBuy.toFixed(2)} shares`,
           );
+
+          // Save to DB (Phase 5 addition)
+          await saveWager({
+            order_id: result.orderId!,
+            market_slug: taker.marketSlug,
+            event_slug: taker.eventSlug,
+            sport: taker.sport,
+            market_type: taker.marketType,
+            outcome: taker.outcome,
+            side: "BUY",
+            order_type: "TAKER",
+            price: taker.polymarketAsk,
+            size_filled: sharesToBuy,
+            ev_at_placement: taker.ev,
+            fair_prob_at_placement: taker.fairProb,
+            event_start_time: undefined, // We can populate this if we carry it in TakerOpportunity
+          });
         } else {
           console.log(
             `   ⚠️  Taker not filled: ${taker.marketSlug} (${taker.outcomeName})`,
@@ -216,6 +235,20 @@ async function placeNewMakers(
         constrainedSizeUSD: sharesToBuy * maker.targetPrice,
       },
     };
+
+    // Sanity check to avoid re-placing if we are already tracking an order for this outcome
+    // The loop above might not have caught it if the positions map wasn't perfectly in sync
+    // or if there are pending orders not yet in 'positions'.
+    // We check our local registry for an active order for this tokenId.
+    const existingTracked = getTrackedMakerOrders().find(
+      (o) => o.tokenId === maker.tokenId,
+    );
+    if (existingTracked) {
+      console.log(
+        `   ⏭️  Skipping ${maker.marketSlug}: active maker order ${existingTracked.orderId.substring(0, 8)} already exists.`,
+      );
+      continue;
+    }
 
     try {
       const result = await placeMakerOrder(adjustedMaker, { dryRun });
@@ -433,7 +466,26 @@ async function handleMarketStates(
     }
   }
 
-  // Check each tracked order
+  // Check each tracked order and handle market starts (CLV)
+  for (const market of markets) {
+    if (!market.marketSlug || !market.startTime) continue;
+
+    const startTime = new Date(market.startTime).getTime();
+
+    // If market just started (or is ongoing) and we haven't recorded CLV yet,
+    // we trigger the CLV update.
+    // Note: updateWagerCLV is idempotent (checks if closing_fair_prob is null).
+    // We rely on latestFairProbs having the last pre-game value.
+
+    if (now >= startTime) {
+      const fairProb = latestFairProbs.get(market.marketSlug);
+      if (fairProb !== undefined) {
+        await updateWagerCLV(market.marketSlug, fairProb);
+      }
+    }
+  }
+
+  // Check each tracked order for cancellation
   for (const order of trackedOrders) {
     const startTime = marketStartTimes.get(order.marketSlug);
 
@@ -475,6 +527,10 @@ async function handleMarketStates(
 // ============================================================================
 // MAIN LOOP
 // ============================================================================
+
+// Global state for CLV tracking
+// Maps marketSlug -> last known fair probability
+const latestFairProbs = new Map<string, number>();
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -558,6 +614,41 @@ async function runCycle(cycleNumber: number): Promise<number> {
       matched,
       capital.totalCapitalUSD,
     );
+
+    // Update global fair probs map for CLV tracking
+    // We do this for every matched market that has a valid EV calculation
+    for (const match of opportunities.matched) {
+      if (match.polymarket.marketSlug && match.ev && match.ev.outcome1Kelly) {
+        // Store the fair prob of outcome 1 (or imply from outcome 2)
+        // This is a simplification; ideally we store per-outcome.
+        // But for 2-way markets, P(A) is enough.
+        // Let's store the fair prob of the *active* opportunity or just the consensus.
+        // match.ev.outcome1Kelly.edge + match.polymarket.bestAsk is the fair prob used for calc?
+        // No, let's look at how analyzer calculates it.
+        // It puts `fairProb` on the opportunity.
+        // Let's grab it from the opportunities list if present, or the raw EV object.
+
+        // If we have a taker opportunity, use that fair prob.
+        // If not, try to derive it from the match.ev if available.
+        // We'll use the consensus fair prob from the calculator result which isn't directly exposed on match.ev
+        // but can be inferred: edge = fair - price => fair = edge + price.
+
+        let fairProb: number | undefined;
+
+        if (match.ev.outcome1Kelly && match.polymarket.bestAsk) {
+          fairProb = match.ev.outcome1Kelly.edge + match.polymarket.bestAsk;
+        } else if (match.ev.outcome2Kelly && match.polymarket.outcome2Ask) {
+          // If we only have outcome 2, fair prob for 1 is 1 - fair2
+          fairProb =
+            1 - (match.ev.outcome2Kelly.edge + match.polymarket.outcome2Ask);
+        }
+
+        if (fairProb !== undefined) {
+          latestFairProbs.set(match.polymarket.marketSlug, fairProb);
+        }
+      }
+    }
+
     const analyzeTime = ((Date.now() - startAnalyze) / 1000).toFixed(1);
     console.log(
       `   ✓ Found ${opportunities.takers.length} takers, ${opportunities.makers.length} makers in ${analyzeTime}s`,
@@ -574,6 +665,13 @@ async function runCycle(cycleNumber: number): Promise<number> {
     // Step 8: Evaluate existing maker orders
     console.log("\n🔍 Step 8: Evaluating existing maker orders...");
     await evaluateExistingMakers(opportunities.makers, positionMap, DRY_RUN);
+
+    // Step 8.5: Track maker fills (DB sync)
+    // Only run in live mode or if we want to test DB logic (but no fills in dry run)
+    if (!DRY_RUN) {
+      console.log("\n💾 Step 8.5: Tracking maker fills...");
+      await trackMakerFills();
+    }
 
     // Step 9: Handle market states (cancel orders for live/closed markets)
     console.log("\n⚠️  Step 9: Checking market states...");
@@ -601,7 +699,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
 async function main() {
   console.log("\n" + "=".repeat(80));
-  console.log("🚀 POLYMARKET ARBITRAGE BOT - PHASE 5");
+  console.log("🚀 POLYMARKET +EV BOT - PHASE 82");
   console.log("=".repeat(80));
   console.log(`Mode: ${DRY_RUN ? "DRY RUN (no real orders)" : "LIVE TRADING"}`);
   console.log(`Started: ${new Date().toISOString()}`);

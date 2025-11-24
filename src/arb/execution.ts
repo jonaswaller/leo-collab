@@ -61,12 +61,11 @@ export async function executeTakerOrder(
 
   // Use Kelly shares, but never below market minimum order size.
   const rawKellyShares = opp.kellySize.constrainedShares;
-  const size = Math.max(
-    opp.minOrderSize,
-    Math.floor(rawKellyShares * 100) / 100,
-  ); // round down to 2dp
 
-  const price = opp.polymarketAsk; // already a valid tick from Gamma
+  // Simplify to whole number shares for robustness, while respecting minOrderSize.
+  const size = Math.max(opp.minOrderSize, Math.floor(rawKellyShares));
+
+  const price = Number(opp.polymarketAsk.toFixed(2)); // ensure max 2dp price accuracy for CLOB limit orders
   const side = Side.BUY; // TakerOpportunity is always hitting the ask (buying)
   const orderType = OrderType.FAK; // Fill-And-Kill (IOC): partial fills OK, remainder cancelled
 

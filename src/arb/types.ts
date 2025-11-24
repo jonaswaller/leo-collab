@@ -188,6 +188,7 @@ export interface TakerOpportunity {
   eventTitle: string;
   marketQuestion: string;
   sport: string;
+  marketType: MarketType;
   outcome: 1 | 2;
   outcomeName: string;
   tokenId: string; // CLOB token ID for this outcome

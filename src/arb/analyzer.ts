@@ -480,6 +480,7 @@ export function analyzeOpportunities(
         eventTitle: pm.eventTitle,
         marketQuestion: pm.marketQuestion,
         sport: pm.sport,
+        marketType: pm.marketType,
         outcome: 1,
         outcomeName: pm.outcome1Name || "Outcome 1",
         tokenId: pm.clobTokenIds[0]!, // First token ID is outcome 1
@@ -505,6 +506,7 @@ export function analyzeOpportunities(
         eventTitle: pm.eventTitle,
         marketQuestion: pm.marketQuestion,
         sport: pm.sport,
+        marketType: pm.marketType,
         outcome: 2,
         outcomeName: pm.outcome2Name || "Outcome 2",
         tokenId: pm.clobTokenIds[1]!, // Second token ID is outcome 2
