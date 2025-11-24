@@ -1,10 +1,11 @@
 /**
- * In-memory registry for maker orders (Phase 3/4).
+ * Database-backed registry for maker orders (Phase 3/4).
  *
- * This is intentionally simple and process-local. Persistent storage
- * will come later once we add a real database.
+ * Persists tracked maker orders to Supabase 'active_maker_orders' table.
+ * This ensures state survives restarts and crashes.
  */
 
+import { supabase } from "../storage/supabase.js";
 import { MakerOpportunity } from "./types.js";
 import { ExecutionPreview } from "./execution.js";
 
@@ -23,43 +24,94 @@ export interface TrackedMakerOrder {
   placedAt: number; // ms since epoch
 }
 
-const trackedMakerOrders = new Map<string, TrackedMakerOrder>();
-
 /**
- * Register a maker order we just placed.
+ * Register a maker order in the database.
  *
  * Call this right after a successful placeMakerOrder() when you have
  * an orderId from the CLOB.
  */
-export function registerMakerOrder(
+export async function registerMakerOrder(
   orderId: string,
   opp: MakerOpportunity,
   preview: ExecutionPreview,
-): void {
-  const now = Date.now();
+): Promise<void> {
+  if (!supabase) {
+    console.warn("⚠️ No database connection, skipping maker registration");
+    return;
+  }
 
-  const entry: TrackedMakerOrder = {
-    orderId,
-    tokenId: opp.tokenId,
-    marketSlug: opp.marketSlug,
-    eventSlug: opp.eventSlug,
+  const { error } = await supabase.from("active_maker_orders").upsert({
+    order_id: orderId,
+    token_id: opp.tokenId,
+    market_slug: opp.marketSlug,
+    event_slug: opp.eventSlug,
     sport: opp.sport,
-    marketType: opp.marketType,
+    market_type: opp.marketType,
     outcome: opp.outcome,
-    targetPrice: preview.price,
+    target_price: preview.price,
     size: preview.size,
-    evAtPlacement: opp.ev,
-    fairProbAtPlacement: opp.fairProb,
-    placedAt: now,
-  };
+    ev_at_placement: opp.ev,
+    fair_prob_at_placement: opp.fairProb,
+    placed_at: new Date().toISOString(),
+  });
 
-  trackedMakerOrders.set(orderId, entry);
+  if (error) {
+    console.error(
+      `❌ Error registering maker order ${orderId}:`,
+      error.message,
+    );
+  }
 }
 
-export function removeMakerOrder(orderId: string): void {
-  trackedMakerOrders.delete(orderId);
+/**
+ * Remove a maker order from the database (it's been cancelled or fully filled).
+ */
+export async function removeMakerOrder(orderId: string): Promise<void> {
+  if (!supabase) {
+    console.warn("⚠️ No database connection, skipping maker removal");
+    return;
+  }
+
+  const { error } = await supabase
+    .from("active_maker_orders")
+    .delete()
+    .eq("order_id", orderId);
+
+  if (error) {
+    console.error(`❌ Error removing maker order ${orderId}:`, error.message);
+  }
 }
 
-export function getTrackedMakerOrders(): TrackedMakerOrder[] {
-  return Array.from(trackedMakerOrders.values());
+/**
+ * Fetch all currently active maker orders from the database.
+ */
+export async function getTrackedMakerOrders(): Promise<TrackedMakerOrder[]> {
+  if (!supabase) {
+    console.warn("⚠️ No database connection, returning empty maker list");
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("active_maker_orders")
+    .select("*");
+
+  if (error) {
+    console.error("❌ Error fetching tracked maker orders:", error.message);
+    return [];
+  }
+
+  return (data || []).map((row: any) => ({
+    orderId: row.order_id,
+    tokenId: row.token_id,
+    marketSlug: row.market_slug,
+    eventSlug: row.event_slug,
+    sport: row.sport,
+    marketType: row.market_type,
+    outcome: row.outcome,
+    targetPrice: Number(row.target_price),
+    size: Number(row.size),
+    evAtPlacement: Number(row.ev_at_placement),
+    fairProbAtPlacement: Number(row.fair_prob_at_placement),
+    placedAt: new Date(row.placed_at).getTime(),
+  }));
 }

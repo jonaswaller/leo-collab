@@ -5,99 +5,121 @@ import {
 } from "../arb/maker-registry.js";
 import { getWagerByOrderId, saveWager, updateWagerSize } from "./operations.js";
 
-// State to track the last time we checked for trades
-let lastTradeCheck = Date.now() - 24 * 60 * 60 * 1000; // Default to 24h ago for first run
-
 /**
- * Poll for recent trades and update the database for any filled Maker orders.
+ * Poll for recent fills and update the database for any filled Maker orders.
  *
- * This is designed to be called once per cycle in the main loop.
+ * Hybrid Strategy:
+ * 1. Fetch ALL live open orders via getOpenOrders() (1 call).
+ *    - Matches tracked orders to open orders.
+ *    - If an order is open and has `size_matched > 0`, update DB (partial fill).
+ *
+ * 2. Identify "Missing" Orders.
+ *    - Tracked orders that are NOT in the open orders list must have finished (filled or cancelled).
+ *    - Fetch status individually for these orders (1 call per finished order).
+ *    - If filled/matched, update DB (full fill).
+ *
+ * This ensures 100% capture of fills (even during downtime) while minimizing API calls.
  */
 export async function trackMakerFills(): Promise<void> {
-  const now = Date.now();
-  const trackedOrders = getTrackedMakerOrders();
+  const trackedOrders = await getTrackedMakerOrders();
 
   if (trackedOrders.length === 0) {
-    lastTradeCheck = now;
     return;
   }
 
   const client = await getClobClient();
 
   try {
-    // Fetch trades since last check
-    // We fetch recent trades for the user.
-    const trades = await client.getTrades({
-      // No specific params, just gets latest trades for the user
-    });
+    // Step 1: Fetch ALL current open orders (efficient batch check)
+    const openOrders = await client.getOpenOrders({}, true); // true = only first page (usually sufficient for active bots)
 
-    // Create a map of tracked orders for O(1) lookup
-    const trackedMap = new Map<string, TrackedMakerOrder>();
-    for (const order of trackedOrders) {
-      trackedMap.set(order.orderId, order);
+    // Map open orders by ID for quick lookup
+    const openOrdersMap = new Map<string, any>();
+    for (const o of openOrders) {
+      openOrdersMap.set(o.id, o);
     }
 
-    // Identify which orders have new activity
-    const activeOrderIds = new Set<string>();
+    // Track which orders we've processed via the open orders list
+    const processedOrderIds = new Set<string>();
 
-    for (const trade of trades) {
-      const tradeOrderId =
-        (trade as any).orderID || (trade as any).maker_order_id;
+    // 1. Update active partial fills
+    for (const trackedOrder of trackedOrders) {
+      const openOrder = openOrdersMap.get(trackedOrder.orderId);
 
-      if (trackedMap.has(tradeOrderId)) {
-        const timestamp = (trade as any).timestamp
-          ? new Date((trade as any).timestamp).getTime()
-          : 0;
-        // If this trade is newer than our last check, mark the order for update
-        if (timestamp > lastTradeCheck) {
-          activeOrderIds.add(tradeOrderId);
+      if (openOrder) {
+        processedOrderIds.add(trackedOrder.orderId);
+
+        // It's still open. Check for partial fills.
+        const sizeMatched = parseFloat(openOrder.size_matched || "0");
+        if (sizeMatched > 0) {
+          await updateOrInsertWager(trackedOrder, sizeMatched);
         }
       }
     }
 
-    // For each active order, fetch the authoritative status from CLOB and update DB
-    for (const orderId of activeOrderIds) {
-      const trackedOrder = trackedMap.get(orderId)!;
+    // 2. Handle finished orders (tracked but not in open list)
+    // These might be fully filled OR cancelled. We must check individually to be sure.
+    const missingOrders = trackedOrders.filter(
+      (t) => !processedOrderIds.has(t.orderId),
+    );
 
-      // Check DB existence
-      const exists = await getWagerByOrderId(orderId);
+    if (missingOrders.length > 0) {
+      // console.log(
+      //   `🔍 Checking status of ${missingOrders.length} finished/missing maker orders...`
+      // );
 
-      // Fetch current status
-      const orderStatus = await client.getOrder(orderId);
-      const totalFilled = orderStatus
-        ? parseFloat(orderStatus.size_matched || "0")
-        : 0;
+      for (const missingOrder of missingOrders) {
+        try {
+          const status = await client.getOrder(missingOrder.orderId);
+          const sizeMatched = status
+            ? parseFloat(status.size_matched || "0")
+            : 0;
 
-      if (totalFilled <= 0) continue;
-
-      if (exists) {
-        // Update existing wager
-        await updateWagerSize(orderId, totalFilled);
-      } else {
-        // Create new wager
-        await saveWager({
-          order_id: orderId,
-          market_slug: trackedOrder.marketSlug,
-          event_slug: trackedOrder.eventSlug,
-          sport: trackedOrder.sport,
-          market_type: trackedOrder.marketType,
-          outcome: trackedOrder.outcome,
-          side: "BUY",
-          order_type: "MAKER",
-          price: trackedOrder.targetPrice,
-          size_filled: totalFilled,
-          ev_at_placement: trackedOrder.evAtPlacement,
-          fair_prob_at_placement: trackedOrder.fairProbAtPlacement,
-          // We don't have event start time readily available in TrackedMakerOrder yet,
-          // but it's not critical for the wager record itself (it's in the market metadata).
-          // We can leave it undefined for now or fetch it if needed.
-          event_start_time: undefined,
-        });
+          if (sizeMatched > 0) {
+            await updateOrInsertWager(missingOrder, sizeMatched);
+          }
+        } catch (error: any) {
+          // If 404, it might be really old or invalid. Just skip.
+          console.warn(
+            `   ⚠️ Could not fetch status for missing order ${missingOrder.orderId}: ${error.message}`,
+          );
+        }
       }
     }
-
-    lastTradeCheck = now;
   } catch (error: any) {
     console.error("❌ Error tracking maker fills:", error.message);
+  }
+}
+
+/**
+ * Helper to update an existing wager or create a new one if it doesn't exist.
+ */
+async function updateOrInsertWager(
+  trackedOrder: TrackedMakerOrder,
+  sizeMatched: number,
+): Promise<void> {
+  // Check DB existence
+  const exists = await getWagerByOrderId(trackedOrder.orderId);
+
+  if (exists) {
+    // Update existing wager with latest filled size
+    await updateWagerSize(trackedOrder.orderId, sizeMatched);
+  } else {
+    // Create new wager
+    await saveWager({
+      order_id: trackedOrder.orderId,
+      market_slug: trackedOrder.marketSlug,
+      event_slug: trackedOrder.eventSlug,
+      sport: trackedOrder.sport,
+      market_type: trackedOrder.marketType,
+      outcome: trackedOrder.outcome,
+      side: "BUY",
+      order_type: "MAKER",
+      price: trackedOrder.targetPrice,
+      size_filled: sizeMatched,
+      ev_at_placement: trackedOrder.evAtPlacement,
+      fair_prob_at_placement: trackedOrder.fairProbAtPlacement,
+      event_start_time: undefined,
+    });
   }
 }

@@ -26,3 +26,19 @@ create index idx_wagers_order_id on wagers(order_id);
 -- Index for looking up by market_slug (useful for finding wagers for a specific market)
 create index idx_wagers_market_slug on wagers(market_slug);
 
+-- Table to track ACTIVE maker orders being managed by the bot
+create table active_maker_orders (
+  order_id text primary key,
+  token_id text not null,
+  market_slug text,
+  event_slug text,
+  sport text,
+  market_type text,
+  outcome int,
+  target_price numeric,
+  size numeric,
+  ev_at_placement numeric,
+  fair_prob_at_placement numeric,
+  placed_at timestamptz default now()
+);
+

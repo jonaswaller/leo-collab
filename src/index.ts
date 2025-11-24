@@ -240,7 +240,7 @@ async function placeNewMakers(
     // The loop above might not have caught it if the positions map wasn't perfectly in sync
     // or if there are pending orders not yet in 'positions'.
     // We check our local registry for an active order for this tokenId.
-    const existingTracked = getTrackedMakerOrders().find(
+    const existingTracked = (await getTrackedMakerOrders()).find(
       (o) => o.tokenId === maker.tokenId,
     );
     if (existingTracked) {
@@ -270,7 +270,11 @@ async function placeNewMakers(
           );
 
           // Register for tracking (per maker-taker-rules.md)
-          registerMakerOrder(result.orderId, adjustedMaker, result.preview);
+          await registerMakerOrder(
+            result.orderId,
+            adjustedMaker,
+            result.preview,
+          );
         } else {
           console.log(
             `   ⚠️  Maker placement failed: ${maker.marketSlug} (${maker.outcomeName})`,
@@ -333,7 +337,7 @@ async function evaluateExistingMakers(
       const price = parseFloat(o.price ?? "0");
       const size = parseFloat(o.original_size ?? "0");
 
-      registerMakerOrder(o.id, opp, {
+      await registerMakerOrder(o.id, opp, {
         tokenID: opp.tokenId,
         // This registry is only used for evaluation metadata; we don't rely
         // on these enum values at runtime, so a string literal is sufficient.
@@ -344,7 +348,7 @@ async function evaluateExistingMakers(
       });
     }
 
-    const trackedOrders = getTrackedMakerOrders();
+    const trackedOrders = await getTrackedMakerOrders();
 
     if (trackedOrders.length === 0) {
       console.log("   No maker orders to evaluate.");
@@ -373,7 +377,7 @@ async function evaluateExistingMakers(
     });
 
     // Run evaluation logic (with live CLOB best bids for outbid detection)
-    const decision = evaluateMakerOrders(
+    const decision = await evaluateMakerOrders(
       makersForEvaluation,
       openOrders as any,
       liveBestPrices,
@@ -403,7 +407,7 @@ async function evaluateExistingMakers(
             console.log(`   ✅ Cancelled order: ${orderId}`);
 
             // Remove from tracking
-            removeMakerOrder(orderId);
+            await removeMakerOrder(orderId);
 
             // Small delay to avoid rate limiting
             await sleep(50);
@@ -449,7 +453,7 @@ async function handleMarketStates(
   dryRun: boolean,
 ): Promise<void> {
   const now = Date.now();
-  const trackedOrders = getTrackedMakerOrders();
+  const trackedOrders = await getTrackedMakerOrders();
 
   if (trackedOrders.length === 0) {
     return;
@@ -513,7 +517,7 @@ async function handleMarketStates(
           console.log(`   ✅ Cancelled order: ${orderId}`);
 
           // Remove from tracking
-          removeMakerOrder(orderId);
+          await removeMakerOrder(orderId);
 
           await sleep(50);
         } catch (error: any) {
@@ -662,22 +666,22 @@ async function runCycle(cycleNumber: number): Promise<number> {
     console.log("\n💎 Step 7: Placing new maker orders...");
     await placeNewMakers(opportunities.makers, positionMap, DRY_RUN);
 
-    // Step 8: Evaluate existing maker orders
-    console.log("\n🔍 Step 8: Evaluating existing maker orders...");
-    await evaluateExistingMakers(opportunities.makers, positionMap, DRY_RUN);
-
-    // Step 8.5: Track maker fills (DB sync)
+    // Step 8: Track maker fills (DB sync) - Run BEFORE evaluation to catch fills on orders that might be cancelled
     // Only run in live mode or if we want to test DB logic (but no fills in dry run)
     if (!DRY_RUN) {
-      console.log("\n💾 Step 8.5: Tracking maker fills...");
+      console.log("\n💾 Step 8: Tracking maker fills...");
       await trackMakerFills();
     }
 
-    // Step 9: Handle market states (cancel orders for live/closed markets)
-    console.log("\n⚠️  Step 9: Checking market states...");
+    // Step 9: Evaluate existing maker orders
+    console.log("\n🔍 Step 9: Evaluating existing maker orders...");
+    await evaluateExistingMakers(opportunities.makers, positionMap, DRY_RUN);
+
+    // Step 10: Handle market states (cancel orders for live/closed markets)
+    console.log("\n⚠️  Step 10: Checking market states...");
     await handleMarketStates(markets, DRY_RUN);
 
-    // Step 10: Get polling interval
+    // Step 11: Get polling interval
     const sleepDuration = getPollingInterval();
     const sleepSeconds = (sleepDuration / 1000).toFixed(0);
 
@@ -710,6 +714,35 @@ async function main() {
     console.log("⚠️  Real orders will be placed on Polymarket");
     console.log("⚠️  Press Ctrl+C within 5 seconds to abort...\n");
     await sleep(5000);
+
+    // STARTUP CLEANUP (FIRST RUN ONLY)
+    // Cancel all open maker orders to start from a clean slate
+    console.log("\n🧹 STARTUP: Cancelling all open maker orders...");
+    try {
+      const client = await getClobClient();
+      await client.cancelAll();
+      console.log("   ✅ All open orders cancelled.");
+
+      // Also clear the DB registry to match
+      // We don't have a "deleteAll" in maker-registry, but we can fetch all and remove one by one
+      // or just truncate the table via SQL if we had a helper.
+      // For now, let's just rely on 'cancelAll' clearing the book.
+      // The registry sync loop in 'evaluateExistingMakers' will re-populate any if they somehow survived,
+      // but since we cancelled them on the CLOB, the registry should naturally clear out or be corrected
+      // when 'evaluateMakerOrders' sees they are gone.
+
+      // Actually, to be safe and ensure our DB state matches the "clean slate",
+      // let's explicitly clear the tracked orders in the DB if possible.
+      // Since 'cancelAll' is async and might take a moment to propagate,
+      // explicit DB cleanup is good practice here.
+      const tracked = await getTrackedMakerOrders();
+      for (const t of tracked) {
+        await removeMakerOrder(t.orderId);
+      }
+      console.log(`   ✅ Removed ${tracked.length} orders from tracking DB.`);
+    } catch (error: any) {
+      console.error("   ❌ Error during startup cleanup:", error.message);
+    }
   }
 
   let cycleNumber = 1;

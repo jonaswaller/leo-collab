@@ -108,7 +108,7 @@ export async function updateWagerCLV(
   // We need to fetch the wagers first to calculate individual CLVs based on their entry price
   const { data: wagers, error: fetchError } = await supabase
     .from("wagers")
-    .select("id, price")
+    .select("id, price, outcome")
     .eq("market_slug", marketSlug)
     .is("closing_fair_prob", null); // Only update if not already set
 
@@ -127,12 +127,18 @@ export async function updateWagerCLV(
   );
 
   for (const wager of wagers) {
-    const clv = (closingFairProb - Number(wager.price)) / closingFairProb;
+    // Determine the correct fair probability for this specific wager outcome
+    // The global tracker (latestFairProbs) stores the prob for Outcome 1.
+    // If this wager is on Outcome 2, we must invert it.
+    const effectiveFairProb =
+      wager.outcome === 1 ? closingFairProb : 1 - closingFairProb;
+
+    const clv = (effectiveFairProb - Number(wager.price)) / effectiveFairProb;
 
     const { error: updateError } = await supabase
       .from("wagers")
       .update({
-        closing_fair_prob: closingFairProb,
+        closing_fair_prob: effectiveFairProb,
         clv: clv,
       })
       .eq("id", wager.id);

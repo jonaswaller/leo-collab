@@ -153,7 +153,7 @@ export const MAKER_EVAL_EV_DROP = 0.02; // 2%
 // ============================================================================
 
 // Fixed polling interval for all markets (in milliseconds)
-export const POLLING_INTERVAL_MS = 15_000; // 15 seconds
+export const POLLING_INTERVAL_MS = 600_000; // 15 seconds
 
 // ============================================================================
 // MAKER STRATEGY

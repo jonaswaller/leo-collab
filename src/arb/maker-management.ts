@@ -71,12 +71,12 @@ export interface MakerOrderDecisionDetail {
  * based on maker-taker-rules.md. New/updated maker orders should be placed
  * in a separate phase using fresh MakerOpportunity[] from the analyzer.
  */
-export function evaluateMakerOrders(
+export async function evaluateMakerOrders(
   currentMakers: MakerOpportunity[],
   openOrders: OpenOrder[],
   liveBestPrices?: Map<string, BestPrices>,
-): MakerEvaluationDecision {
-  const tracked = getTrackedMakerOrders();
+): Promise<MakerEvaluationDecision> {
+  const tracked = await getTrackedMakerOrders();
 
   const openById = new Map<string, OpenOrder>();
   for (const o of openOrders) {
@@ -97,7 +97,7 @@ export function evaluateMakerOrders(
 
     // If the order is no longer open on the CLOB, drop it from registry.
     if (!open) {
-      removeMakerOrder(trackedOrder.orderId);
+      await removeMakerOrder(trackedOrder.orderId);
       cleanedUpOrderIds.push(trackedOrder.orderId);
 
       details.push({
