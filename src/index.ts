@@ -134,7 +134,11 @@ async function executeTakers(
     };
 
     try {
-      const result = await executeTakerOrder(adjustedTaker, { dryRun });
+      const result = await executeTakerOrder(
+        adjustedTaker,
+        adjustedTaker.eventStartTime || new Date().toISOString(),
+        { dryRun },
+      );
 
       if (dryRun) {
         console.log(
@@ -166,7 +170,10 @@ async function executeTakers(
             size_filled: sharesToBuy,
             ev_at_placement: taker.ev,
             fair_prob_at_placement: taker.fairProb,
-            event_start_time: undefined, // We can populate this if we carry it in TakerOpportunity
+            event_start_time:
+              taker.eventStartTime && typeof taker.eventStartTime === "string"
+                ? new Date(taker.eventStartTime)
+                : undefined,
           });
         } else {
           console.log(
@@ -274,6 +281,7 @@ async function placeNewMakers(
             result.orderId,
             adjustedMaker,
             result.preview,
+            adjustedMaker.eventStartTime,
           );
         } else {
           console.log(
@@ -337,15 +345,20 @@ async function evaluateExistingMakers(
       const price = parseFloat(o.price ?? "0");
       const size = parseFloat(o.original_size ?? "0");
 
-      await registerMakerOrder(o.id, opp, {
-        tokenID: opp.tokenId,
-        // This registry is only used for evaluation metadata; we don't rely
-        // on these enum values at runtime, so a string literal is sufficient.
-        side: "BUY" as any,
-        price,
-        size,
-        orderType: "GTC" as any,
-      });
+      await registerMakerOrder(
+        o.id,
+        opp,
+        {
+          tokenID: opp.tokenId,
+          // This registry is only used for evaluation metadata; we don't rely
+          // on these enum values at runtime, so a string literal is sufficient.
+          side: "BUY" as any,
+          price,
+          size,
+          orderType: "GTC" as any,
+        },
+        opp.eventStartTime,
+      );
     }
 
     const trackedOrders = await getTrackedMakerOrders();
@@ -470,25 +483,6 @@ async function handleMarketStates(
     }
   }
 
-  // Check each tracked order and handle market starts (CLV)
-  for (const market of markets) {
-    if (!market.marketSlug || !market.startTime) continue;
-
-    const startTime = new Date(market.startTime).getTime();
-
-    // If market just started (or is ongoing) and we haven't recorded CLV yet,
-    // we trigger the CLV update.
-    // Note: updateWagerCLV is idempotent (checks if closing_fair_prob is null).
-    // We rely on latestFairProbs having the last pre-game value.
-
-    if (now >= startTime) {
-      const fairProb = latestFairProbs.get(market.marketSlug);
-      if (fairProb !== undefined) {
-        await updateWagerCLV(market.marketSlug, fairProb);
-      }
-    }
-  }
-
   // Check each tracked order for cancellation
   for (const order of trackedOrders) {
     const startTime = marketStartTimes.get(order.marketSlug);
@@ -531,10 +525,6 @@ async function handleMarketStates(
 // ============================================================================
 // MAIN LOOP
 // ============================================================================
-
-// Global state for CLV tracking
-// Maps marketSlug -> last known fair probability
-const latestFairProbs = new Map<string, number>();
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -619,36 +609,25 @@ async function runCycle(cycleNumber: number): Promise<number> {
       capital.totalCapitalUSD,
     );
 
-    // Update global fair probs map for CLV tracking
-    // We do this for every matched market that has a valid EV calculation
+    // UPDATE CLV FOR PRE-GAME MARKETS (T-15m)
+    // Iterate through matched markets and update CLV if within 15 mins of start
     for (const match of opportunities.matched) {
-      if (match.polymarket.marketSlug && match.ev && match.ev.outcome1Kelly) {
-        // Store the fair prob of outcome 1 (or imply from outcome 2)
-        // This is a simplification; ideally we store per-outcome.
-        // But for 2-way markets, P(A) is enough.
-        // Let's store the fair prob of the *active* opportunity or just the consensus.
-        // match.ev.outcome1Kelly.edge + match.polymarket.bestAsk is the fair prob used for calc?
-        // No, let's look at how analyzer calculates it.
-        // It puts `fairProb` on the opportunity.
-        // Let's grab it from the opportunities list if present, or the raw EV object.
+      if (
+        match.polymarket.marketSlug &&
+        match.fairProbOutcome1 !== undefined &&
+        match.polymarket.startTime
+      ) {
+        const startTime = new Date(match.polymarket.startTime).getTime();
+        const timeToStart = startTime - Date.now();
+        const isClosingWindow =
+          timeToStart <= 15 * 60 * 1000 && timeToStart > 0;
 
-        // If we have a taker opportunity, use that fair prob.
-        // If not, try to derive it from the match.ev if available.
-        // We'll use the consensus fair prob from the calculator result which isn't directly exposed on match.ev
-        // but can be inferred: edge = fair - price => fair = edge + price.
-
-        let fairProb: number | undefined;
-
-        if (match.ev.outcome1Kelly && match.polymarket.bestAsk) {
-          fairProb = match.ev.outcome1Kelly.edge + match.polymarket.bestAsk;
-        } else if (match.ev.outcome2Kelly && match.polymarket.outcome2Ask) {
-          // If we only have outcome 2, fair prob for 1 is 1 - fair2
-          fairProb =
-            1 - (match.ev.outcome2Kelly.edge + match.polymarket.outcome2Ask);
-        }
-
-        if (fairProb !== undefined) {
-          latestFairProbs.set(match.polymarket.marketSlug, fairProb);
+        if (isClosingWindow) {
+          await updateWagerCLV(
+            match.polymarket.marketSlug,
+            match.fairProbOutcome1,
+            match.fairProbOutcome2,
+          );
         }
       }
     }

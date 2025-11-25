@@ -163,6 +163,10 @@ function calculateMarketEV(
   );
   if (!consensus) return;
 
+  // Store consensus probability for CLV tracking
+  match.fairProbOutcome1 = consensus.consensus1;
+  match.fairProbOutcome2 = consensus.consensus2;
+
   // Calculate taker EV
   let outcome1EV: number | null = null;
   let outcome2EV: number | null = null;
@@ -492,6 +496,7 @@ export function analyzeOpportunities(
         tickSize: pm.tickSize || 0.001, // Default to 0.001 if not provided
         minOrderSize: pm.minOrderSize || 5, // Default to 5 shares if not provided
         negRisk: pm.negRisk || false,
+        eventStartTime: pm.startTime,
       });
     }
 
@@ -518,6 +523,7 @@ export function analyzeOpportunities(
         tickSize: pm.tickSize || 0.001,
         minOrderSize: pm.minOrderSize || 5,
         negRisk: pm.negRisk || false,
+        eventStartTime: pm.startTime,
       });
     }
   }
@@ -571,6 +577,7 @@ export function analyzeOpportunities(
         tickSize: pm.tickSize || 0.001,
         minOrderSize: pm.minOrderSize || 5,
         negRisk: pm.negRisk || false,
+        eventStartTime: pm.startTime,
       });
     }
 
@@ -604,6 +611,7 @@ export function analyzeOpportunities(
         tickSize: pm.tickSize || 0.001,
         minOrderSize: pm.minOrderSize || 5,
         negRisk: pm.negRisk || false,
+        eventStartTime: pm.startTime,
       });
     }
   }

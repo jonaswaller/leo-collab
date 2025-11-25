@@ -39,6 +39,7 @@ create table active_maker_orders (
   size numeric,
   ev_at_placement numeric,
   fair_prob_at_placement numeric,
-  placed_at timestamptz default now()
+  placed_at timestamptz default now(),
+  event_start_time timestamptz
 );
 

@@ -139,6 +139,8 @@ export interface MatchedMarket {
     };
   };
   skipReason?: string;
+  fairProbOutcome1?: number;
+  fairProbOutcome2?: number;
   ev?: {
     outcome1EV: number | null;
     outcome2EV: number | null;
@@ -200,6 +202,7 @@ export interface TakerOpportunity {
   tickSize: number;
   minOrderSize: number;
   negRisk: boolean;
+  eventStartTime?: string;
 }
 
 export interface MakerOpportunity {
@@ -223,6 +226,7 @@ export interface MakerOpportunity {
   tickSize: number;
   minOrderSize: number;
   negRisk: boolean;
+  eventStartTime?: string;
 }
 
 export interface Opportunities {

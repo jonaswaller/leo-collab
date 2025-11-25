@@ -53,6 +53,7 @@ export interface ExecutionResult {
  */
 export async function executeTakerOrder(
   opp: TakerOpportunity,
+  startTime: string,
   options?: ExecutionOptions,
 ): Promise<ExecutionResult> {
   const dryRun = options?.dryRun !== false; // default true

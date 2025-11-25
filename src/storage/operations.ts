@@ -101,7 +101,8 @@ export async function getWagerByOrderId(orderId: string): Promise<boolean> {
  */
 export async function updateWagerCLV(
   marketSlug: string,
-  closingFairProb: number,
+  closingFairProb1: number,
+  closingFairProb2?: number, // Optional: Explicit prob for outcome 2 (needed for 3-way markets like Soccer H2H)
 ): Promise<void> {
   if (!supabase) return;
 
@@ -109,8 +110,7 @@ export async function updateWagerCLV(
   const { data: wagers, error: fetchError } = await supabase
     .from("wagers")
     .select("id, price, outcome")
-    .eq("market_slug", marketSlug)
-    .is("closing_fair_prob", null); // Only update if not already set
+    .eq("market_slug", marketSlug);
 
   if (fetchError) {
     console.error(
@@ -122,16 +122,26 @@ export async function updateWagerCLV(
 
   if (!wagers || wagers.length === 0) return;
 
-  console.log(
-    `📉 Updating CLV for ${wagers.length} wagers in ${marketSlug}...`,
-  );
+  // console.log(
+  //   `📉 Updating CLV for ${wagers.length} wagers in ${marketSlug}...`,
+  // );
 
   for (const wager of wagers) {
     // Determine the correct fair probability for this specific wager outcome
-    // The global tracker (latestFairProbs) stores the prob for Outcome 1.
-    // If this wager is on Outcome 2, we must invert it.
-    const effectiveFairProb =
-      wager.outcome === 1 ? closingFairProb : 1 - closingFairProb;
+    let effectiveFairProb: number;
+
+    if (wager.outcome === 1) {
+      effectiveFairProb = closingFairProb1;
+    } else {
+      // Outcome 2
+      if (closingFairProb2 !== undefined) {
+        // Use explicit probability if available (supports 3-way markets)
+        effectiveFairProb = closingFairProb2;
+      } else {
+        // Fallback to standard binary inversion (safe for spreads/totals/2-way ML)
+        effectiveFairProb = 1 - closingFairProb1;
+      }
+    }
 
     const clv = (effectiveFairProb - Number(wager.price)) / effectiveFairProb;
 

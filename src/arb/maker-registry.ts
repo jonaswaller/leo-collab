@@ -22,6 +22,7 @@ export interface TrackedMakerOrder {
   evAtPlacement: number;
   fairProbAtPlacement: number;
   placedAt: number; // ms since epoch
+  eventStartTime?: string;
 }
 
 /**
@@ -34,6 +35,7 @@ export async function registerMakerOrder(
   orderId: string,
   opp: MakerOpportunity,
   preview: ExecutionPreview,
+  eventStartTime?: string,
 ): Promise<void> {
   if (!supabase) {
     console.warn("⚠️ No database connection, skipping maker registration");
@@ -53,6 +55,7 @@ export async function registerMakerOrder(
     ev_at_placement: opp.ev,
     fair_prob_at_placement: opp.fairProb,
     placed_at: new Date().toISOString(),
+    event_start_time: eventStartTime,
   });
 
   if (error) {
@@ -113,5 +116,6 @@ export async function getTrackedMakerOrders(): Promise<TrackedMakerOrder[]> {
     evAtPlacement: Number(row.ev_at_placement),
     fairProbAtPlacement: Number(row.fair_prob_at_placement),
     placedAt: new Date(row.placed_at).getTime(),
+    eventStartTime: row.event_start_time,
   }));
 }

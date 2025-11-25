@@ -9,7 +9,7 @@
 // Polymarket Market Discovery
 // ============================================================================
 
-export const HOURS_AHEAD = 24;
+export const HOURS_AHEAD = 1;
 
 // ============================================================================
 // API CONFIGURATION
@@ -113,7 +113,7 @@ export const SPORT_MAP: Record<string, string> = {
 export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
   h2h: { min: 0.03, max: 0.08 },
   spreads: { min: 0.04, max: 0.09 },
-  totals: { min: 0.04, max: 0.09 },
+  totals: { min: 0.05, max: 0.11 },
   h2h_h1: { min: 0.06, max: 0.12 },
   spreads_h1: { min: 0.06, max: 0.12 },
   totals_h1: { min: 0.06, max: 0.12 },
