@@ -514,6 +514,25 @@ export function calculateKellySize(
   const constrainedShares = constrainedSizeUSD / price;
   const bankrollPct = (constrainedSizeUSD / bankroll) * 100;
 
+  // IMPORTANT:
+  // Update in-memory exposure so subsequent Kelly calls within the SAME cycle
+  // see this newly planned position. This partially fixes:
+  // - LEAK B: multiple Kelly-sized bets in one loop ignoring each other
+  // - LEAK C: maker orders not counted until they fill
+  //
+  // Note: setExposureFromSnapshot() is still called once per cycle to seed
+  // currentPositions from live positions + tracked maker orders. Here we
+  // incrementally add the notional size of each new bet on top of that seed.
+  if (marketSlug) {
+    const prev = currentPositions.byMarket.get(marketSlug) || 0;
+    currentPositions.byMarket.set(marketSlug, prev + constrainedSizeUSD);
+  }
+
+  if (eventSlug) {
+    const prev = currentPositions.byEvent.get(eventSlug) || 0;
+    currentPositions.byEvent.set(eventSlug, prev + constrainedSizeUSD);
+  }
+
   return {
     edge,
     kellyFraction: adjustedKelly,

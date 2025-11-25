@@ -3,6 +3,7 @@ import { OpenOrder, OpenOrderParams } from "@polymarket/clob-client";
 import { PolymarketMarket } from "./types.js";
 import { getClobClient } from "./clob.js";
 import { ExposureSnapshot } from "./calculator.js";
+import type { TrackedMakerOrder } from "./maker-registry.js";
 
 const DATA_API_BASE =
   process.env.POLYMARKET_DATA_API_URL?.trim() ||
@@ -217,6 +218,39 @@ export function buildExposureSnapshotsFromPositions(
       marketKey,
       eventKey,
       exposureUSD: p.currentValueUSD,
+    });
+  }
+
+  return snapshots;
+}
+
+/**
+ * Build ExposureSnapshot objects from currently tracked MAKER orders.
+ *
+ * This treats the notional size of each live maker order (price * shares) as
+ * part of our exposure limits. Combined with calculateKellySize() updating
+ * currentPositions incrementally, this fixes:
+ * - LEAK C: maker orders not counted toward per-market / per-event caps.
+ *
+ * NOTE: TrackedMakerOrder.size is in SHARES, targetPrice is in PROBABILITY
+ * (0-1). exposureUSD = size * targetPrice.
+ */
+export function buildExposureSnapshotsFromMakerOrders(
+  makers: TrackedMakerOrder[],
+): ExposureSnapshot[] {
+  const snapshots: ExposureSnapshot[] = [];
+
+  for (const m of makers) {
+    const exposureUSD = m.size * m.targetPrice;
+    if (!Number.isFinite(exposureUSD) || exposureUSD <= 0) continue;
+
+    const marketKey = m.marketSlug || `${m.eventSlug || ""}:${m.tokenId}`;
+    const eventKey = m.eventSlug || m.marketSlug || m.tokenId;
+
+    snapshots.push({
+      marketKey,
+      eventKey,
+      exposureUSD,
     });
   }
 

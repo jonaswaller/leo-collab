@@ -26,6 +26,7 @@ import {
   fetchOpenOrders,
   computeCapitalSummary,
   buildExposureSnapshotsFromPositions,
+  buildExposureSnapshotsFromMakerOrders,
   EnrichedPosition,
 } from "./arb/positions.js";
 import { setExposureFromSnapshot } from "./arb/calculator.js";
@@ -49,7 +50,7 @@ import { trackMakerFills } from "./storage/tracking.js";
 // CONFIGURATION
 // ============================================================================
 
-import { POLLING_INTERVAL_MS } from "./arb/config.js";
+import { POLLING_INTERVAL_MS, CLV_UPDATE_WINDOW_MS } from "./arb/config.js";
 
 const DRY_RUN = process.env.DRY_RUN !== "false"; // Default to dry-run for safety
 
@@ -577,11 +578,22 @@ async function runCycle(cycleNumber: number): Promise<number> {
     const positions = await fetchCurrentPositions();
     const openOrders = await fetchOpenOrders();
 
-    const exposureSnapshots = buildExposureSnapshotsFromPositions(
+    // Seed exposure with current positions
+    const positionExposureSnapshots = buildExposureSnapshotsFromPositions(
       markets,
       positions,
     );
-    setExposureFromSnapshot(exposureSnapshots);
+
+    // Add exposure from ALL currently tracked maker orders (open makers).
+    // This ensures maker notional counts toward per-market and per-event caps.
+    const trackedMakers = await getTrackedMakerOrders();
+    const makerExposureSnapshots =
+      buildExposureSnapshotsFromMakerOrders(trackedMakers);
+
+    setExposureFromSnapshot([
+      ...positionExposureSnapshots,
+      ...makerExposureSnapshots,
+    ]);
 
     const capital = computeCapitalSummary(
       wallet.usdcBalance,
@@ -620,7 +632,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
         const startTime = new Date(match.polymarket.startTime).getTime();
         const timeToStart = startTime - Date.now();
         const isClosingWindow =
-          timeToStart <= 15 * 60 * 1000 && timeToStart > 0;
+          timeToStart <= CLV_UPDATE_WINDOW_MS && timeToStart > 0;
 
         if (isClosingWindow) {
           await updateWagerCLV(
