@@ -9,7 +9,7 @@
 // Polymarket Market Discovery
 // ============================================================================
 
-export const HOURS_AHEAD = 18;
+export const HOURS_AHEAD = 24;
 
 // ============================================================================
 // API CONFIGURATION
