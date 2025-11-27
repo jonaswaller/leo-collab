@@ -146,6 +146,7 @@ export interface MatchedMarket {
     outcome2EV: number | null;
     bestEV: number | null;
     bestOutcome: string | null;
+    bookmakers: string[];
     outcome1Kelly: KellySize | null;
     outcome2Kelly: KellySize | null;
   };
@@ -198,6 +199,7 @@ export interface TakerOpportunity {
   fairProb: number;
   polymarketAsk: number;
   ev: number;
+  bookmakers: string[];
   kellySize: KellySize;
   tickSize: number;
   minOrderSize: number;
@@ -222,6 +224,7 @@ export interface MakerOpportunity {
   currentBid: number | undefined;
   margin: number;
   ev: number;
+  bookmakers: string[];
   kellySize: KellySize;
   tickSize: number;
   minOrderSize: number;

@@ -21,6 +21,7 @@ export interface TrackedMakerOrder {
   size: number;
   evAtPlacement: number;
   fairProbAtPlacement: number;
+  bookmakers: string[];
   placedAt: number; // ms since epoch
   eventStartTime?: string;
 }
@@ -54,6 +55,7 @@ export async function registerMakerOrder(
     size: preview.size,
     ev_at_placement: opp.ev,
     fair_prob_at_placement: opp.fairProb,
+    bookmakers_used: opp.bookmakers,
     placed_at: new Date().toISOString(),
     event_start_time: eventStartTime,
   });
@@ -115,6 +117,7 @@ export async function getTrackedMakerOrders(): Promise<TrackedMakerOrder[]> {
     size: Number(row.size),
     evAtPlacement: Number(row.ev_at_placement),
     fairProbAtPlacement: Number(row.fair_prob_at_placement),
+    bookmakers: row.bookmakers_used || [],
     placedAt: new Date(row.placed_at).getTime(),
     eventStartTime: row.event_start_time,
   }));

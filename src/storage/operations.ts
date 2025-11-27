@@ -13,6 +13,7 @@ export interface Wager {
   size_filled: number;
   ev_at_placement: number;
   fair_prob_at_placement: number;
+  bookmakers: string[];
   event_start_time?: Date | null | undefined;
 }
 
@@ -37,6 +38,7 @@ export async function saveWager(wager: Wager): Promise<void> {
       size_filled: wager.size_filled,
       ev_at_placement: wager.ev_at_placement,
       fair_prob_at_placement: wager.fair_prob_at_placement,
+      bookmakers_used: wager.bookmakers,
       event_start_time: wager.event_start_time,
     },
   ]);

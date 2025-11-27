@@ -171,6 +171,7 @@ async function executeTakers(
             size_filled: sharesToBuy,
             ev_at_placement: taker.ev,
             fair_prob_at_placement: taker.fairProb,
+            bookmakers: taker.bookmakers,
             event_start_time:
               taker.eventStartTime && typeof taker.eventStartTime === "string"
                 ? new Date(taker.eventStartTime)
@@ -237,6 +238,7 @@ async function placeNewMakers(
     // Create adjusted opportunity with correct size
     const adjustedMaker: MakerOpportunity = {
       ...maker,
+      bookmakers: maker.bookmakers,
       kellySize: {
         ...maker.kellySize,
         constrainedShares: sharesToBuy,

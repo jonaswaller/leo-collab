@@ -244,6 +244,7 @@ function calculateMarketEV(
     outcome2EV,
     bestEV,
     bestOutcome,
+    bookmakers: bookmakerOdds.map((b) => b.bookmaker),
     outcome1Kelly,
     outcome2Kelly,
   };
@@ -492,6 +493,7 @@ export function analyzeOpportunities(
         fairProb: match.ev.outcome1Kelly.edge + pm.bestAsk,
         polymarketAsk: pm.bestAsk,
         ev: match.ev.outcome1EV!,
+        bookmakers: match.ev.bookmakers,
         kellySize: match.ev.outcome1Kelly,
         tickSize: pm.tickSize || 0.001, // Default to 0.001 if not provided
         minOrderSize: pm.minOrderSize || 5, // Default to 5 shares if not provided
@@ -519,6 +521,7 @@ export function analyzeOpportunities(
         fairProb: match.ev.outcome2Kelly.edge + pm.outcome2Ask,
         polymarketAsk: pm.outcome2Ask,
         ev: match.ev.outcome2EV!,
+        bookmakers: match.ev.bookmakers,
         kellySize: match.ev.outcome2Kelly,
         tickSize: pm.tickSize || 0.001,
         minOrderSize: pm.minOrderSize || 5,
@@ -573,6 +576,7 @@ export function analyzeOpportunities(
         currentBid: pm.bestBid,
         margin: match.makerEV.outcome1BidMargin!,
         ev: match.makerEV.outcome1BidEV!,
+        bookmakers: match.ev!.bookmakers, // Use bookmakers from main EV calculation
         kellySize: match.makerEV.outcome1BidKelly,
         tickSize: pm.tickSize || 0.001,
         minOrderSize: pm.minOrderSize || 5,
@@ -607,6 +611,7 @@ export function analyzeOpportunities(
         currentBid: pm.outcome2Bid,
         margin: match.makerEV.outcome2BidMargin!,
         ev: match.makerEV.outcome2BidEV!,
+        bookmakers: match.ev!.bookmakers, // Use bookmakers from main EV calculation
         kellySize: match.makerEV.outcome2BidKelly,
         tickSize: pm.tickSize || 0.001,
         minOrderSize: pm.minOrderSize || 5,

@@ -119,6 +119,7 @@ async function updateOrInsertWager(
       size_filled: sizeMatched,
       ev_at_placement: trackedOrder.evAtPlacement,
       fair_prob_at_placement: trackedOrder.fairProbAtPlacement,
+      bookmakers: trackedOrder.bookmakers,
       event_start_time: trackedOrder.eventStartTime
         ? new Date(trackedOrder.eventStartTime)
         : undefined,
