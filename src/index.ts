@@ -696,7 +696,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
 async function main() {
   console.log("\n" + "=".repeat(80));
-  console.log("🚀 POLYMARKET +EV BOT - PHASE 82");
+  console.log("🚀 POLYMARKET +EV BOT BOOTING UP... 🤖");
   console.log("=".repeat(80));
   console.log(`Mode: ${DRY_RUN ? "DRY RUN (no real orders)" : "LIVE TRADING"}`);
   console.log(`Started: ${new Date().toISOString()}`);
