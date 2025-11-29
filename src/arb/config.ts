@@ -107,16 +107,23 @@ export const SPORT_MAP: Record<string, string> = {
 };
 
 // ============================================================================
+// MARGIN ADJUSTMENT
+// ============================================================================
+
+// Change to 0.01 on Friday, back to 0.00 on Sunday
+export const MARGIN_ADJUSTMENT = 0.01;
+
+// ============================================================================
 // MARKET MAKER MARGINS (by market type)
 // ============================================================================
 
 export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
-  h2h: { min: 0.03, max: 0.08 },
-  spreads: { min: 0.04, max: 0.09 },
-  totals: { min: 0.05, max: 0.11 },
-  h2h_h1: { min: 0.06, max: 0.12 },
-  spreads_h1: { min: 0.06, max: 0.12 },
-  totals_h1: { min: 0.06, max: 0.12 },
+  h2h: { min: 0.03 + MARGIN_ADJUSTMENT, max: 0.08 + MARGIN_ADJUSTMENT },
+  spreads: { min: 0.04 + MARGIN_ADJUSTMENT, max: 0.09 + MARGIN_ADJUSTMENT },
+  totals: { min: 0.05 + MARGIN_ADJUSTMENT, max: 0.11 + MARGIN_ADJUSTMENT },
+  h2h_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
+  spreads_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
+  totals_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
 };
 
 // ============================================================================
@@ -124,12 +131,12 @@ export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
 // ============================================================================
 
 export const TAKER_MARGINS: Record<string, number> = {
-  h2h: 0.02, // 2% minimum for moneyline
-  spreads: 0.03, // 3% minimum for spreads
-  totals: 0.03, // 3% minimum for totals
-  h2h_h1: 0.05, // 5% minimum for 1st half moneyline
-  spreads_h1: 0.05, // 5% minimum for 1st half spreads
-  totals_h1: 0.05, // 5% minimum for 1st half totals
+  h2h: 0.03 + MARGIN_ADJUSTMENT, // 2% minimum for moneyline
+  spreads: 0.04 + MARGIN_ADJUSTMENT, // 3% minimum for spreads
+  totals: 0.05 + MARGIN_ADJUSTMENT, // 3% minimum for totals
+  h2h_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half moneyline
+  spreads_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half spreads
+  totals_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half totals
 };
 
 // ============================================================================
@@ -138,7 +145,7 @@ export const TAKER_MARGINS: Record<string, number> = {
 
 export const KELLY_MULTIPLIER = 0.5; // Half Kelly (conservative)
 export const MAX_PER_MARKET_FRACTION = 0.03; // 3% of bankroll per market - enforced per order immediately
-export const MAX_PER_EVENT_FRACTION = 0.07; // 7% of bankroll per event - enforced only on ACTUAL position value, not on the sum of open orders
+export const MAX_PER_EVENT_FRACTION = 0.05; // WAS 7% of bankroll per event - enforced only on ACTUAL position value, not on the sum of open orders
 export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================
