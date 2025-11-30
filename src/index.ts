@@ -160,6 +160,7 @@ async function executeTakers(
           // Save to DB (Phase 5 addition)
           await saveWager({
             order_id: result.orderId!,
+            token_id: taker.tokenId,
             market_slug: taker.marketSlug,
             event_slug: taker.eventSlug,
             sport: taker.sport,

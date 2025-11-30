@@ -2,6 +2,7 @@ import { supabase } from "./supabase.js";
 
 export interface Wager {
   order_id: string;
+  token_id: string;
   market_slug: string;
   event_slug: string;
   sport: string;
@@ -27,6 +28,7 @@ export async function saveWager(wager: Wager): Promise<void> {
   const { error } = await supabase.from("wagers").insert([
     {
       order_id: wager.order_id,
+      token_id: wager.token_id,
       market_slug: wager.market_slug,
       event_slug: wager.event_slug,
       sport: wager.sport,

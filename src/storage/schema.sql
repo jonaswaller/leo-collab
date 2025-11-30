@@ -2,6 +2,7 @@
 create table wagers (
   id serial primary key,
   order_id text not null unique,
+  token_id text not null,
   market_slug text,
   event_slug text,
   sport text,

@@ -108,6 +108,7 @@ async function updateOrInsertWager(
     // Create new wager
     await saveWager({
       order_id: trackedOrder.orderId,
+      token_id: trackedOrder.tokenId,
       market_slug: trackedOrder.marketSlug,
       event_slug: trackedOrder.eventSlug,
       sport: trackedOrder.sport,
