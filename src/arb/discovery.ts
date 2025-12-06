@@ -469,8 +469,19 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
         const { homeTeam, awayTeam } = parseTeamNames(eventTitle);
         const marketType = detectMarketType(marketQuestion);
 
-        // Skip team totals (we don't want to analyze these)
-        if (marketQuestion.toLowerCase().includes("team total")) {
+        // Skip team totals and player props
+        const slug = (market.slug || "").toLowerCase();
+        const qLower = marketQuestion.toLowerCase();
+        if (
+          qLower.includes("team total") ||
+          slug.includes("-rush-") ||
+          slug.includes("-rec-") ||
+          slug.includes("-pass-") ||
+          slug.includes("-pts-") ||
+          slug.includes("-reb-") ||
+          slug.includes("-ast-") ||
+          slug.includes("-player-")
+        ) {
           continue;
         }
 

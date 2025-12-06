@@ -111,7 +111,7 @@ export const SPORT_MAP: Record<string, string> = {
 // ============================================================================
 
 // Change to 0.01 on Friday, back to 0.00 on Saturday night
-export const MARGIN_ADJUSTMENT = 0.00;
+export const MARGIN_ADJUSTMENT = 0.0;
 
 // ============================================================================
 // MARKET MAKER MARGINS (by market type)
