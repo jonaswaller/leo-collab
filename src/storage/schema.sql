@@ -16,7 +16,7 @@ create table wagers (
   fair_prob_at_placement numeric,
   bookmakers_used jsonb, -- List of bookmakers used for EV calculation
   closing_fair_prob numeric, -- Updated at event start
-  clv numeric, -- Closing Line Value: (closing_fair_prob - price) / closing_fair_prob
+  clv numeric, -- Closing Line Value: (closing_fair_prob - price) / price
   profit_loss numeric, -- Updated upon settlement
   created_at timestamptz default now(),
   event_start_time timestamptz

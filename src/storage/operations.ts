@@ -101,7 +101,7 @@ export async function getWagerByOrderId(orderId: string): Promise<boolean> {
  * Update Closing Line Value (CLV) for all wagers on a specific market.
  * Call this when a market transitions to "started" (live).
  *
- * CLV = (closing_fair_prob - price) / closing_fair_prob
+ * CLV = (closing_fair_prob - price) / price
  */
 export async function updateWagerCLV(
   marketSlug: string,
@@ -147,7 +147,7 @@ export async function updateWagerCLV(
       }
     }
 
-    const clv = (effectiveFairProb - Number(wager.price)) / effectiveFairProb;
+    const clv = (effectiveFairProb - Number(wager.price)) / Number(wager.price);
 
     const { error: updateError } = await supabase
       .from("wagers")

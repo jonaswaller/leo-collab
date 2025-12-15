@@ -50,7 +50,11 @@ import { trackMakerFills } from "./storage/tracking.js";
 // CONFIGURATION
 // ============================================================================
 
-import { POLLING_INTERVAL_MS, CLV_UPDATE_WINDOW_MS } from "./arb/config.js";
+import {
+  POLLING_INTERVAL_MS,
+  CLV_UPDATE_WINDOW_MS,
+  TAKER_MIN_BOOKMAKERS,
+} from "./arb/config.js";
 
 const DRY_RUN = process.env.DRY_RUN !== "false"; // Default to dry-run for safety
 
@@ -109,6 +113,14 @@ async function executeTakers(
   console.log(`\n🎯 Executing ${takers.length} taker opportunities...`);
 
   for (const taker of takers) {
+    // Skip if not enough bookmakers for reliable EV calculation
+    if (taker.bookmakers.length < TAKER_MIN_BOOKMAKERS) {
+      console.log(
+        `   ⏭️  Skipping ${taker.marketSlug} (${taker.outcomeName}): only ${taker.bookmakers.length} bookmakers (need ${TAKER_MIN_BOOKMAKERS})`,
+      );
+      continue;
+    }
+
     const currentPosition = positionMap.get(taker.tokenId);
     const currentShares = currentPosition?.shares || 0;
 

@@ -120,7 +120,7 @@ export const MARGIN_ADJUSTMENT = 0.0;
 export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
   h2h: { min: 0.03 + MARGIN_ADJUSTMENT, max: 0.08 + MARGIN_ADJUSTMENT },
   spreads: { min: 0.04 + MARGIN_ADJUSTMENT, max: 0.09 + MARGIN_ADJUSTMENT },
-  totals: { min: 0.05 + MARGIN_ADJUSTMENT, max: 0.11 + MARGIN_ADJUSTMENT },
+  totals: { min: 0.07 + MARGIN_ADJUSTMENT, max: 0.11 + MARGIN_ADJUSTMENT },
   h2h_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
   spreads_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
   totals_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
@@ -130,10 +130,14 @@ export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
 // MARKET TAKER MINIMUM EV THRESHOLDS (by market type)
 // ============================================================================
 
+// Minimum number of bookmakers required for taker order execution
+// Orders calculated with fewer bookmakers will be skipped
+export const TAKER_MIN_BOOKMAKERS = 4;
+
 export const TAKER_MARGINS: Record<string, number> = {
   h2h: 0.03 + MARGIN_ADJUSTMENT, // 2% minimum for moneyline
   spreads: 0.04 + MARGIN_ADJUSTMENT, // 3% minimum for spreads
-  totals: 0.05 + MARGIN_ADJUSTMENT, // 3% minimum for totals
+  totals: 0.075 + MARGIN_ADJUSTMENT, // 3% minimum for totals
   h2h_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half moneyline
   spreads_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half spreads
   totals_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half totals
@@ -143,9 +147,9 @@ export const TAKER_MARGINS: Record<string, number> = {
 // KELLY CRITERION & POSITION SIZING
 // ============================================================================
 
-export const KELLY_MULTIPLIER = 0.5; // Half Kelly (conservative)
-export const MAX_PER_MARKET_FRACTION = 0.03; // 3% of bankroll per market - enforced per order immediately
-export const MAX_PER_EVENT_FRACTION = 0.05; // WAS 7% of bankroll per event - enforced only on ACTUAL position value, not on the sum of open orders
+export const KELLY_MULTIPLIER = 0.4; // Half Kelly (conservative)
+export const MAX_PER_MARKET_FRACTION = 0.04; // 3% of bankroll per market - enforced per order immediately
+export const MAX_PER_EVENT_FRACTION = 0.07; // WAS 7% of bankroll per event - enforced only on ACTUAL position value, not on the sum of open orders
 export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================
