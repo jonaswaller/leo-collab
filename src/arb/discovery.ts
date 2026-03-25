@@ -20,7 +20,7 @@ import { HOURS_AHEAD } from "./config.js";
 // ============================================================================
 
 const MIN_LIQUIDITY = 0;
-const MAX_CONCURRENT = 20; // Process 20 at a time
+const MAX_CONCURRENT = 5; // Process 5 at a time to limit memory usage
 const REQUEST_DELAY_MS = 100; // 100ms between request batches = 10 req/s sustained
 
 // Create dedicated axios instance for Gamma API with optimized settings
@@ -273,7 +273,8 @@ async function fetchEventsForSport(
       params: {
         tag_id: tagId,
         closed: false,
-        limit: 100,
+        active: true,
+        limit: 50,
         include_tag: true,
       },
     });
@@ -353,21 +354,29 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
 
   // Step 1: Get all sports metadata
   const sports = await getSportsMetadata();
+  console.log(`[Discovery] Got ${sports.length} sports from metadata`);
 
   // Step 2: Build list of all (sport, tagId) pairs
   const requests: Array<{ sport: SportMetadata; tagId: string }> = [];
+  let skippedTags = 0;
   for (const sport of sports) {
     const tagIds = sport.tags
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
     for (const tagId of tagIds) {
+      if (tagId === "TBD" || !/^\d+$/.test(tagId)) {
+        skippedTags++;
+        continue;
+      }
       requests.push({ sport, tagId });
     }
   }
+  console.log(`[Discovery] Built ${requests.length} tag requests (skipped ${skippedTags} invalid tags)`);
 
   // Step 3: Process all requests with intelligent throttling
   const allResults = await processWithThrottling(requests, startMin, startMax);
+  console.log(`[Discovery] Got events from ${allResults.length}/${requests.length} tags`);
 
   // Step 4: Extract and filter markets from events
   const allMarkets: PolymarketMarket[] = [];
@@ -400,17 +409,31 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
     "mma",
   ];
 
+  let totalEvents = 0;
+  let noMarketsCount = 0;
+  let noStartTimeCount = 0;
+  let outsideWindowCount = 0;
+  let unsupportedSportCount = 0;
+  let closedCount = 0;
+  let noBidAskCount = 0;
+  let lowLiquidityCount = 0;
+  let phantomCount = 0;
+  let playerPropCount = 0;
+
   for (const { sport, events } of allResults) {
     for (const event of events) {
-      if (!event.markets || event.markets.length === 0) continue;
+      totalEvents++;
+      if (!event.markets || event.markets.length === 0) { noMarketsCount++; continue; }
 
       const eventStartTime = extractStartTime(event, undefined);
 
       // Skip events with no valid start time or outside time window
-      if (
-        !eventStartTime ||
-        !isWithinTimeWindow(eventStartTime, now, windowEnd)
-      ) {
+      if (!eventStartTime) {
+        noStartTimeCount++;
+        continue;
+      }
+      if (!isWithinTimeWindow(eventStartTime, now, windowEnd)) {
+        outsideWindowCount++;
         continue;
       }
 
@@ -418,11 +441,11 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
       const actualSport = detectSportFromEvent(event, sport.sport);
 
       // Skip unsupported sports
-      if (!SUPPORTED_SPORTS.includes(actualSport)) continue;
+      if (!SUPPORTED_SPORTS.includes(actualSport)) { unsupportedSportCount++; continue; }
 
       for (const market of event.markets) {
         // Skip closed/inactive markets
-        if (market.closed || market.active === false) continue;
+        if (market.closed || market.active === false) { closedCount++; continue; }
 
         // Skip markets with no orders in the order book
         const hasBid =
@@ -434,13 +457,13 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           market.bestAsk !== undefined &&
           market.bestAsk !== 0;
 
-        if (!hasBid && !hasAsk) continue;
+        if (!hasBid && !hasAsk) { noBidAskCount++; continue; }
 
         // Calculate liquidity
         const liquidity = calculateLiquidity(market);
 
         // Filter by minimum liquidity
-        if (liquidity < MIN_LIQUIDITY) continue;
+        if (liquidity < MIN_LIQUIDITY) { lowLiquidityCount++; continue; }
 
         // Filter out phantom markets (extreme spreads)
         const hasBidAsk =
@@ -453,10 +476,12 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           const spread = market.bestAsk! - market.bestBid!;
 
           if (spread > 0.9 || (liquidity === 0 && spread > 0.5)) {
+            phantomCount++;
             continue;
           }
 
           if (market.bestBid! < 0.02 && market.bestAsk! > 0.98) {
+            phantomCount++;
             continue;
           }
         }
@@ -482,6 +507,7 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           slug.includes("-ast-") ||
           slug.includes("-player-")
         ) {
+          playerPropCount++;
           continue;
         }
 
@@ -581,6 +607,19 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
       }
     }
   }
+
+  console.log(`[Discovery] Filter funnel:`);
+  console.log(`  Total events: ${totalEvents}`);
+  console.log(`  Filtered — no markets: ${noMarketsCount}`);
+  console.log(`  Filtered — no start time: ${noStartTimeCount}`);
+  console.log(`  Filtered — outside window (${HOURS_AHEAD}h): ${outsideWindowCount}`);
+  console.log(`  Filtered — unsupported sport: ${unsupportedSportCount}`);
+  console.log(`  Filtered — closed/inactive: ${closedCount}`);
+  console.log(`  Filtered — no bid/ask: ${noBidAskCount}`);
+  console.log(`  Filtered — low liquidity: ${lowLiquidityCount}`);
+  console.log(`  Filtered — phantom spread: ${phantomCount}`);
+  console.log(`  Filtered — player props: ${playerPropCount}`);
+  console.log(`  Passed all filters: ${allMarkets.length}`);
 
   // Deduplicate markets by unique key
   const seen = new Set<string>();

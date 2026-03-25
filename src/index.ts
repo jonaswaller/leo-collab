@@ -583,9 +583,45 @@ async function runCycle(cycleNumber: number): Promise<number> {
     const matchedCount = matched.filter(
       (m) => Object.keys(m.sportsbooks).length > 0,
     ).length;
+    const skipped = matched.filter(
+      (m) => Object.keys(m.sportsbooks).length === 0 && m.skipReason,
+    );
     console.log(
       `   ✓ Matched ${matchedCount}/${matched.length} markets in ${matchTime}s`,
     );
+
+    // Summarize skip reasons
+    const skipReasons: Record<string, number> = {};
+    for (const m of skipped) {
+      // Bucket line-specific reasons into a generic key
+      let reason = m.skipReason!;
+      if (reason.startsWith("No sportsbooks offer line")) {
+        reason = "No sportsbooks offer line";
+      }
+      skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+    }
+    if (Object.keys(skipReasons).length > 0) {
+      console.log(`   Skip reasons:`);
+      for (const [reason, count] of Object.entries(skipReasons).sort(
+        (a, b) => b[1] - a[1],
+      )) {
+        console.log(`     ${count}x ${reason}`);
+      }
+    }
+
+    // Log unmatched line details
+    const lineSkips = skipped.filter((m) =>
+      m.skipReason?.startsWith("No sportsbooks offer line"),
+    );
+    if (lineSkips.length > 0) {
+      console.log(`\n   Unmatched lines (${lineSkips.length}):`);
+      for (const m of lineSkips) {
+        console.log(
+          `     [${m.polymarket.sport}] ${m.polymarket.eventTitle} — ${m.polymarket.marketQuestion}`,
+        );
+        console.log(`       ${m.skipReason}`);
+      }
+    }
 
     // Step 4: Get capital & positions
     console.log("\n💰 Step 4: Computing capital & positions...");

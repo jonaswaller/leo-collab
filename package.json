@@ -4,8 +4,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "start:live": "DRY_RUN=false tsx src/index.ts"
+    "start": "NODE_OPTIONS='--max-old-space-size=4096' tsx src/index.ts",
+    "start:live": "NODE_OPTIONS='--max-old-space-size=4096' DRY_RUN=false tsx src/index.ts"
   },
   "keywords": [],
   "author": "",

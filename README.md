@@ -1,4 +1,4 @@
-# Copycat
+# Polymarket Sports Algo
 
 A +EV sports betting bot that trades on [Polymarket](https://polymarket.com). It sources sharp odds from major sportsbooks, builds a fair probability model, and executes both taker and maker orders on the CLOB when it finds edge.
 
