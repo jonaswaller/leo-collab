@@ -34,12 +34,26 @@ async function initClobClient(): Promise<ClobClient> {
 
   const signer = new Wallet(privateKey);
 
-  // First, create a lightweight client to derive or create the API key (L1 auth only).
-  const l1Client = new ClobClient(host, chainId, signer);
-  const creds = await l1Client.createOrDeriveApiKey();
-
-  // Then construct the full L2-authenticated client used for trading.
+  // Create client with signature type and funder upfront (required for proxy wallets).
   const client = new ClobClient(
+    host,
+    chainId,
+    signer,
+    undefined as any,
+    signatureType as any,
+    funderAddress,
+  );
+
+  // Derive API creds, with fallback to derive-only if create fails.
+  let creds: any;
+  try {
+    creds = await client.createOrDeriveApiKey();
+  } catch {
+    creds = await client.deriveApiKey();
+  }
+
+  // Re-construct with creds set.
+  const authedClient = new ClobClient(
     host,
     chainId,
     signer,
@@ -48,7 +62,7 @@ async function initClobClient(): Promise<ClobClient> {
     funderAddress,
   );
 
-  return client;
+  return authedClient;
 }
 
 let clobClientPromise: Promise<ClobClient> | null = null;

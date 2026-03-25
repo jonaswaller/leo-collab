@@ -5,21 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "tsx src/index.ts",
-    "start:live": "DRY_RUN=false tsx src/index.ts",
-    "test-main-loop": "tsx scripts/test-main-loop.ts",
-    "test-analyzer": "tsx scripts/test-analyzer.ts",
-    "test-clob": "tsx scripts/test-clob.ts",
-    "test-discovery": "tsx scripts/test-discovery.ts",
-    "test-matcher": "tsx scripts/test-matcher.ts",
-    "test-metadata": "tsx scripts/test-metadata.ts",
-    "test-odds-fetcher": "tsx scripts/test-odds-fetcher.ts",
-    "print-evs": "tsx scripts/print-evs.ts",
-    "debug-skipped": "tsx scripts/debug-skipped-markets.ts",
-    "debug-positions": "tsx scripts/debug-positions.ts",
-    "test-execution": "tsx scripts/test-execution.ts",
-    "test-order-monitor": "tsx scripts/test-order-monitor.ts",
-    "test-maker-management": "tsx scripts/test-maker-management.ts",
-    "test-maker-full": "tsx scripts/test-maker-lifecycle-full.ts"
+    "start:live": "DRY_RUN=false tsx src/index.ts"
   },
   "keywords": [],
   "author": "",

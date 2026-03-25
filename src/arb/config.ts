@@ -9,7 +9,7 @@
 // Polymarket Market Discovery
 // ============================================================================
 
-export const HOURS_AHEAD = 24;
+export const HOURS_AHEAD = 12;
 
 // ============================================================================
 // API CONFIGURATION
@@ -164,7 +164,7 @@ export const MAKER_EVAL_EV_DROP = 0.02; // 2%
 // ============================================================================
 
 // Fixed polling interval for all markets (in milliseconds)
-export const POLLING_INTERVAL_MS = 15_000; // 15 seconds = 15_000
+export const POLLING_INTERVAL_MS = 0; // No sleep between cycles
 
 // ============================================================================
 // CLV UPDATE WINDOW
