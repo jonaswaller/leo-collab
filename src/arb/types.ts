@@ -10,7 +10,7 @@ export type MarketType =
   | "h2h"
   | "spreads"
   | "totals"
-  | "player_props" // PM WON'T RETURN THIS RN BECAUSE DOESN'T EXIST
+  | "player_props"
   | "other";
 
 export interface PolymarketMarket {
@@ -31,6 +31,10 @@ export interface PolymarketMarket {
   outcome2Ask?: number;
   eventSlug?: string;
   marketSlug?: string;
+  // Player prop fields
+  playerName?: string; // e.g. "LeBron James"
+  playerStatType?: string; // e.g. "points", "rebounds", "assists"
+  playerLine?: number; // e.g. 27.5
   // CLOB Trading Metadata (required for order execution)
   clobTokenIds?: string[]; // Array of token IDs, e.g., ["123", "456"]
   conditionId?: string; // Condition ID for CLOB operations
@@ -101,6 +105,7 @@ export interface OddsAPIOutcome {
   name: string;
   price: number; // American odds
   point?: number; // For spreads/totals
+  description?: string; // Player name for player props
 }
 
 export interface OddsAPIMarket {
@@ -214,6 +219,7 @@ export interface MakerOpportunity {
   marketQuestion: string;
   sport: string;
   marketType: MarketType;
+  bucketKey: string;
   isFirstHalf: boolean;
   outcome: 1 | 2;
   outcomeName: string;

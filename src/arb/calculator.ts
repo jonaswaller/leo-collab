@@ -16,7 +16,7 @@ import {
   TAKER_MARGINS,
   KELLY_MULTIPLIER,
   MAX_PER_MARKET_FRACTION,
-  MAX_PER_EVENT_FRACTION,
+  MAX_PER_BUCKET_FRACTION,
   BANKROLL_USD,
 } from "./config.js";
 
@@ -29,21 +29,21 @@ import {
  *
  * All values are in USD, not shares.
  * - marketKey: typically a market slug; used for per-market limits
- * - eventKey: typically an event slug; used for per-event limits
+ * - bucketKey: optional correlation bucket used for bucket-level limits
  */
 export interface ExposureSnapshot {
   marketKey: string;
-  eventKey: string;
+  bucketKey?: string;
   exposureUSD: number;
 }
 
 // In-memory aggregates of current exposure, populated by setExposureFromSnapshot().
 const currentPositions: {
   byMarket: Map<string, number>;
-  byEvent: Map<string, number>;
+  byBucket: Map<string, number>;
 } = {
   byMarket: new Map(),
-  byEvent: new Map(),
+  byBucket: new Map(),
 };
 
 /**
@@ -54,10 +54,10 @@ const currentPositions: {
  */
 export function setExposureFromSnapshot(snapshots: ExposureSnapshot[]): void {
   currentPositions.byMarket.clear();
-  currentPositions.byEvent.clear();
+  currentPositions.byBucket.clear();
 
   for (const snap of snapshots) {
-    const { marketKey, eventKey, exposureUSD } = snap;
+    const { marketKey, bucketKey, exposureUSD } = snap;
     if (!Number.isFinite(exposureUSD) || exposureUSD <= 0) continue;
 
     if (marketKey) {
@@ -65,9 +65,9 @@ export function setExposureFromSnapshot(snapshots: ExposureSnapshot[]): void {
       currentPositions.byMarket.set(marketKey, prev + exposureUSD);
     }
 
-    if (eventKey) {
-      const prev = currentPositions.byEvent.get(eventKey) || 0;
-      currentPositions.byEvent.set(eventKey, prev + exposureUSD);
+    if (bucketKey) {
+      const prev = currentPositions.byBucket.get(bucketKey) || 0;
+      currentPositions.byBucket.set(bucketKey, prev + exposureUSD);
     }
   }
 }
@@ -477,8 +477,14 @@ export function calculateKellySize(
   price: number,
   bankroll: number,
   marketSlug: string,
-  eventSlug: string,
+  bucketKey: string,
+  options?: {
+    consumeMarketExposure?: boolean;
+    consumeBucketExposure?: boolean;
+  },
 ): KellySize {
+  const consumeMarketExposure = options?.consumeMarketExposure !== false;
+  const consumeBucketExposure = options?.consumeBucketExposure !== false;
   const edge = fairProb - price;
   const kellyFraction = edge / (1 - price);
   const adjustedKelly = kellyFraction * KELLY_MULTIPLIER;
@@ -488,13 +494,13 @@ export function calculateKellySize(
 
   // Calculate position limits
   const maxPerMarket = bankroll * MAX_PER_MARKET_FRACTION;
-  const maxPerEvent = bankroll * MAX_PER_EVENT_FRACTION;
+  const maxPerBucket = bankroll * MAX_PER_BUCKET_FRACTION;
 
   const currentMarketExposure = currentPositions.byMarket.get(marketSlug) || 0;
-  const currentEventExposure = currentPositions.byEvent.get(eventSlug) || 0;
+  const currentBucketExposure = currentPositions.byBucket.get(bucketKey) || 0;
 
   const remainingMarketRoom = maxPerMarket - currentMarketExposure;
-  const remainingEventRoom = maxPerEvent - currentEventExposure;
+  const remainingBucketRoom = maxPerBucket - currentBucketExposure;
 
   let constrainedSizeUSD = rawKellySizeUSD;
   let limitingFactor = "kelly";
@@ -504,9 +510,9 @@ export function calculateKellySize(
     limitingFactor = "market_limit";
   }
 
-  if (remainingEventRoom < constrainedSizeUSD) {
-    constrainedSizeUSD = remainingEventRoom;
-    limitingFactor = "event_limit";
+  if (remainingBucketRoom < constrainedSizeUSD) {
+    constrainedSizeUSD = remainingBucketRoom;
+    limitingFactor = "bucket_limit";
   }
 
   constrainedSizeUSD = Math.max(0, constrainedSizeUSD);
@@ -523,14 +529,14 @@ export function calculateKellySize(
   // Note: setExposureFromSnapshot() is still called once per cycle to seed
   // currentPositions from live positions + tracked maker orders. Here we
   // incrementally add the notional size of each new bet on top of that seed.
-  if (marketSlug) {
+  if (consumeMarketExposure && marketSlug) {
     const prev = currentPositions.byMarket.get(marketSlug) || 0;
     currentPositions.byMarket.set(marketSlug, prev + constrainedSizeUSD);
   }
 
-  if (eventSlug) {
-    const prev = currentPositions.byEvent.get(eventSlug) || 0;
-    currentPositions.byEvent.set(eventSlug, prev + constrainedSizeUSD);
+  if (consumeBucketExposure && bucketKey) {
+    const prev = currentPositions.byBucket.get(bucketKey) || 0;
+    currentPositions.byBucket.set(bucketKey, prev + constrainedSizeUSD);
   }
 
   return {

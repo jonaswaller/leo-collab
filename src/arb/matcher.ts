@@ -40,6 +40,44 @@ function teamsMatch(pm: string, odds: string): boolean {
   return false;
 }
 
+function playerStatToOddsKey(statType: string, sport: string): string | null {
+  if (["nba", "ncaab", "cbb", "wnba"].includes(sport)) {
+    const map: Record<string, string> = {
+      points: "player_points", rebounds: "player_rebounds",
+      assists: "player_assists", threes: "player_threes",
+      blocks: "player_blocks", steals: "player_steals",
+    };
+    return map[statType] || null;
+  }
+  if (sport === "mlb") {
+    const map: Record<string, string> = {
+      strikeouts: "pitcher_strikeouts", hits: "batter_hits",
+      "home runs": "batter_home_runs", "total bases": "batter_total_bases",
+      rbis: "batter_rbis",
+    };
+    return map[statType] || null;
+  }
+  if (sport === "nhl") {
+    const map: Record<string, string> = {
+      points: "player_points", assists: "player_assists",
+      goals: "player_goals", "shots on goal": "player_shots_on_goal",
+      saves: "player_total_saves",
+    };
+    return map[statType] || null;
+  }
+  if (["nfl", "cfb"].includes(sport)) {
+    const map: Record<string, string> = {
+      "pass yards": "player_pass_yds", "rush yards": "player_rush_yds",
+      "reception yards": "player_reception_yds", receptions: "player_receptions",
+      "pass attempts": "player_pass_attempts", "pass completions": "player_pass_completions",
+      "pass touchdowns": "player_pass_tds", "rush attempts": "player_rush_attempts",
+      tackles: "player_tackles_assists", sacks: "player_sacks",
+    };
+    return map[statType] || null;
+  }
+  return null;
+}
+
 function extractLine(question: string, marketType: MarketType): number | null {
   if (marketType === "totals") {
     const match = question.match(/o\/u\s+(\d+\.?\d*)/i);
@@ -95,10 +133,7 @@ function matchMarket(
   }
 
   // Skip unsupported types
-  if (
-    pmMarket.marketType === "player_props" ||
-    pmMarket.marketType === "other"
-  ) {
+  if (pmMarket.marketType === "other") {
     result.skipReason = "Unsupported market type";
     return result;
   }
@@ -123,6 +158,66 @@ function matchMarket(
 
   // Determine if this is a first-half market
   const isFirstHalfMarket = isFirstHalf(pmMarket.marketQuestion);
+
+  // Handle player props separately
+  if (pmMarket.marketType === "player_props") {
+    if (!pmMarket.playerName || !pmMarket.playerStatType || pmMarket.playerLine === undefined) {
+      result.skipReason = "Missing player prop fields";
+      return result;
+    }
+
+    const oddsAPIKey = playerStatToOddsKey(pmMarket.playerStatType, pmMarket.sport);
+    if (!oddsAPIKey) {
+      result.skipReason = `Unsupported player stat type: ${pmMarket.playerStatType}`;
+      return result;
+    }
+
+    const pmPlayerNorm = normalizeTeam(pmMarket.playerName);
+
+    for (const bookmaker of matchingEvent.bookmakers) {
+      if (!BOOKMAKERS.includes(bookmaker.key)) continue;
+
+      const market = bookmaker.markets.find((m) => m.key === oddsAPIKey);
+      if (!market) continue;
+
+      // Find outcomes matching this player AND line
+      // Player props use `description` for player name, `name` is "Over"/"Under"
+      const matchingOutcomes = market.outcomes.filter((o) => {
+        if (o.point === undefined || !o.description) return false;
+        if (Math.abs(o.point - pmMarket.playerLine!) >= 0.01) return false;
+        const oddsPlayerNorm = normalizeTeam(o.description);
+        return pmPlayerNorm === oddsPlayerNorm ||
+          pmPlayerNorm.includes(oddsPlayerNorm) ||
+          oddsPlayerNorm.includes(pmPlayerNorm);
+      });
+
+      if (matchingOutcomes.length > 0) {
+        // Build a synthetic market with just this player's outcomes at this line
+        result.sportsbooks[bookmaker.key] = {
+          market: { ...market, outcomes: matchingOutcomes },
+          event: matchingEvent,
+        };
+      }
+    }
+
+    if (Object.keys(result.sportsbooks).length === 0) {
+      // Check what's available for debugging
+      const availablePlayers = new Set<string>();
+      for (const bookmaker of matchingEvent.bookmakers) {
+        const market = bookmaker.markets.find((m) => m.key === oddsAPIKey);
+        if (market) {
+          for (const o of market.outcomes) {
+            availablePlayers.add(`${o.name} (${o.point})`);
+          }
+        }
+      }
+      result.skipReason = availablePlayers.size > 0
+        ? `Player prop not found: ${pmMarket.playerName} ${pmMarket.playerStatType} ${pmMarket.playerLine}`
+        : `No ${oddsAPIKey} market available for this event`;
+    }
+
+    return result;
+  }
 
   // Build list of possible market keys to check (featured + alternate)
   const possibleMarketKeys: string[] = [];

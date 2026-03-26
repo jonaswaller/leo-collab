@@ -7,7 +7,6 @@
 
 import axios from "axios";
 import {
-  SportMetadata,
   GammaEvent,
   GammaMarket,
   PolymarketMarket,
@@ -21,20 +20,47 @@ import { HOURS_AHEAD } from "./config.js";
 
 const MIN_LIQUIDITY = 0;
 const MAX_CONCURRENT = 5; // Process 5 at a time to limit memory usage
-const REQUEST_DELAY_MS = 100; // 100ms between request batches = 10 req/s sustained
+const REQUEST_DELAY_MS = 100; // 100ms between request batches
+
+// Single source of truth: sport code → Gamma tag IDs
+const SPORT_TAG_MAP: Record<string, string[]> = {
+  // US major leagues
+  nhl: ["899"],
+  nba: ["745"],
+  nfl: ["450"],
+  mlb: ["100381"],
+  cfb: ["100351"],
+  ncaab: ["100149"],
+  cbb: ["101178"],
+  wnba: ["100254"],
+  // Soccer
+  epl: ["82", "306"],
+  lal: ["780"],
+  bun: ["1494"],
+  fl1: ["102070"],
+  sea: ["101962"],
+  ere: ["101735"],
+  mls: ["100100"],
+  mex: ["102448"],
+  arg: ["102561"],
+  ucl: ["100977"],
+  uel: ["101787"],
+  // Cricket
+  ipl: ["101977"],
+  odi: ["102815"],
+  t20: ["102810"],
+  // MMA
+  mma: ["100639"],
+};
 
 // Create dedicated axios instance for Gamma API with optimized settings
 const axGamma = axios.create({
   baseURL: "https://gamma-api.polymarket.com",
   timeout: 10000,
-  // Enable HTTP keep-alive for connection reuse
   headers: {
     Connection: "keep-alive",
   },
 });
-
-// Cache for sports metadata (rarely changes)
-let sportsMetadataCache: SportMetadata[] | null = null;
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -122,8 +148,16 @@ function parseTeamNames(eventTitle: string): {
   return {};
 }
 
+// Player prop pattern: "Player Name: Stat O/U Line"
+const PLAYER_PROP_RE = /^(.+?):\s*(Points|Rebounds|Assists|Threes|Blocks|Steals|Strikeouts|Hits|Home Runs|Total Bases|RBIs|Goals|Shots on Goal|Saves|Pass Yards|Rush Yards|Reception Yards|Receptions|Pass Attempts|Pass Completions|Pass Touchdowns|Rush Attempts|Tackles|Sacks)\s+O\/U\s+(\d+\.?\d*)/i;
+
 function detectMarketType(question: string): MarketType {
   const q = question.toLowerCase();
+
+  // Player props MUST be checked before totals (both contain "O/U")
+  if (PLAYER_PROP_RE.test(question)) {
+    return "player_props";
+  }
 
   if (q.includes("o/u") || q.includes("over/under") || q.includes("total")) {
     return "totals";
@@ -137,15 +171,6 @@ function detectMarketType(question: string): MarketType {
     /[+-]\d+\.5\b/.test(question)
   ) {
     return "spreads";
-  }
-
-  if (
-    q.includes("player") ||
-    q.includes("points") ||
-    q.includes("assists") ||
-    q.includes("rebounds")
-  ) {
-    return "player_props";
   }
 
   if (q.includes("will") && q.includes("win")) {
@@ -163,124 +188,37 @@ function detectMarketType(question: string): MarketType {
   return "other";
 }
 
-function detectSportFromEvent(
-  event: GammaEvent,
-  fallbackSport: string,
-): string {
-  // PRIORITY 1: Check event slug for sport indicators (most reliable for international competitions)
-  if (event.slug) {
-    const slug = event.slug.toLowerCase();
-
-    // FIFA World Cup Qualifiers (various prefixes)
-    if (
-      slug.includes("uef-") ||
-      slug.includes("uefa-") ||
-      slug.startsWith("fif-")
-    ) {
-      return "wcq_europe"; // UEFA/FIFA World Cup Qualifiers - Europe
-    }
-    if (slug.includes("conmebol-") || slug.includes("wcq-sa")) {
-      return "wcq_south_america"; // CONMEBOL World Cup Qualifiers
-    }
-
-    // CONCACAF competitions (cof- prefix or concacaf/cnl in slug)
-    if (
-      slug.startsWith("cof-") ||
-      slug.includes("concacaf-") ||
-      slug.includes("cnl-")
-    ) {
-      return "concacaf"; // CONCACAF Nations League / Gold Cup
-    }
-  }
-
-  // PRIORITY 2: Use category if available
-  if (event.category) {
-    const cat = event.category.toLowerCase();
-    if (cat.includes("hockey") || cat.includes("nhl")) return "nhl";
-    if (cat.includes("basketball") && cat.includes("college")) return "ncaab";
-    if (cat.includes("basketball") && cat.includes("nba")) return "nba";
-    if (cat.includes("football") && cat.includes("college")) return "cfb";
-    if (cat.includes("football") && cat.includes("nfl")) return "nfl";
-    if (cat.includes("baseball")) return "mlb";
-  }
-
-  if (event.tags && event.tags.length > 0) {
-    const tagIds = event.tags.map((t) => t.id);
-
-    // Sport-specific tag IDs
-    if (tagIds.includes("899")) return "nhl";
-    if (tagIds.includes("745")) return "nba";
-    if (tagIds.includes("450")) return "nfl";
-    if (tagIds.includes("100381")) return "mlb";
-    if (tagIds.includes("100351")) return "cfb";
-    if (tagIds.includes("100149")) return "ncaab";
-    if (tagIds.includes("101178")) return "cbb";
-    if (tagIds.includes("100254")) return "wnba";
-
-    // Soccer leagues
-    if (tagIds.includes("82")) return "epl";
-    if (tagIds.includes("780")) return "lal";
-    if (tagIds.includes("1494")) return "bun";
-    if (tagIds.includes("306")) return "epl";
-    if (tagIds.includes("102070")) return "fl1";
-    if (tagIds.includes("101962")) return "sea";
-    if (tagIds.includes("101735")) return "ere";
-    if (tagIds.includes("100100")) return "mls";
-    if (tagIds.includes("102448")) return "mex";
-    if (tagIds.includes("102561")) return "arg";
-    if (tagIds.includes("100977")) return "ucl";
-    if (tagIds.includes("101787")) return "uel";
-
-    // Cricket
-    if (tagIds.includes("101977")) return "ipl";
-    if (tagIds.includes("102815")) return "odi";
-    if (tagIds.includes("102810")) return "t20";
-
-    // MMA
-    if (
-      tagIds.includes("100639") &&
-      (event.title || "").toLowerCase().includes("ufc")
-    ) {
-      return "mma";
-    }
-  }
-
-  return fallbackSport;
+/**
+ * Parse player prop details from market question.
+ * Returns { playerName, statType, line } or null if not a player prop.
+ */
+function parsePlayerProp(question: string): { playerName: string; statType: string; line: number } | null {
+  const match = PLAYER_PROP_RE.exec(question);
+  if (!match) return null;
+  return {
+    playerName: match[1]!.trim(),
+    statType: match[2]!.toLowerCase(),
+    line: parseFloat(match[3]!),
+  };
 }
 
 // ============================================================================
 // API FUNCTIONS
 // ============================================================================
 
-async function getSportsMetadata(): Promise<SportMetadata[]> {
-  // Return cached data if available
-  if (sportsMetadataCache) {
-    return sportsMetadataCache;
-  }
-
-  const { data } = await axGamma.get<SportMetadata[]>("/sports");
-  sportsMetadataCache = data; // Cache for future calls
-  return data;
-}
-
-async function fetchEventsForSport(
-  tagId: string,
-  startMin: string,
-  startMax: string,
-): Promise<GammaEvent[]> {
+async function fetchEventsForTag(tagId: string): Promise<GammaEvent[]> {
   try {
     const { data } = await axGamma.get<GammaEvent[]>("/events", {
       params: {
         tag_id: tagId,
         closed: false,
         active: true,
-        limit: 50,
+        limit: 100,
         include_tag: true,
       },
     });
     return data || [];
   } catch (error: any) {
-    // Silently handle errors for individual tags (some may have no events)
     if (error.response?.status !== 404) {
       console.warn(
         `[Discovery] Warning: Error fetching events for tag ${tagId}`,
@@ -288,53 +226,6 @@ async function fetchEventsForSport(
     }
     return [];
   }
-}
-
-/**
- * Process requests with intelligent throttling
- * Uses a sliding window approach to maximize throughput while respecting rate limits
- */
-async function processWithThrottling(
-  requests: Array<{ sport: SportMetadata; tagId: string }>,
-  startMin: string,
-  startMax: string,
-): Promise<Array<{ sport: SportMetadata; events: GammaEvent[] }>> {
-  const results: Array<{ sport: SportMetadata; events: GammaEvent[] }> = [];
-
-  // Process in chunks of MAX_CONCURRENT
-  for (let i = 0; i < requests.length; i += MAX_CONCURRENT) {
-    const chunk = requests.slice(i, i + MAX_CONCURRENT);
-
-    const chunkPromises = chunk.map(async ({ sport, tagId }) => {
-      const events = await fetchEventsForSport(tagId, startMin, startMax);
-      return { sport, tagId, events };
-    });
-
-    const chunkResults = await Promise.allSettled(chunkPromises);
-
-    const successfulResults = chunkResults
-      .filter((r) => r.status === "fulfilled")
-      .map(
-        (r) =>
-          (
-            r as PromiseFulfilledResult<{
-              sport: SportMetadata;
-              tagId: string;
-              events: GammaEvent[];
-            }>
-          ).value,
-      )
-      .filter((r) => r.events.length > 0);
-
-    results.push(...successfulResults);
-
-    // Small delay between chunks to avoid rate limiting
-    if (i + MAX_CONCURRENT < requests.length) {
-      await sleep(REQUEST_DELAY_MS);
-    }
-  }
-
-  return results;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -349,71 +240,51 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
   const now = new Date();
   const windowEnd = new Date(now.getTime() + HOURS_AHEAD * 60 * 60 * 1000);
 
-  const startMin = now.toISOString();
-  const startMax = windowEnd.toISOString();
-
-  // Step 1: Get all sports metadata
-  const sports = await getSportsMetadata();
-  console.log(`[Discovery] Got ${sports.length} sports from metadata`);
-
-  // Step 2: Build list of all (sport, tagId) pairs
-  const requests: Array<{ sport: SportMetadata; tagId: string }> = [];
-  let skippedTags = 0;
-  for (const sport of sports) {
-    const tagIds = sport.tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
+  // Build flat list of { sport, tagId } from SPORT_TAG_MAP
+  const requests: Array<{ sport: string; tagId: string }> = [];
+  for (const [sport, tagIds] of Object.entries(SPORT_TAG_MAP)) {
     for (const tagId of tagIds) {
-      if (tagId === "TBD" || !/^\d+$/.test(tagId)) {
-        skippedTags++;
-        continue;
-      }
       requests.push({ sport, tagId });
     }
   }
-  console.log(`[Discovery] Built ${requests.length} tag requests (skipped ${skippedTags} invalid tags)`);
+  console.log(
+    `[Discovery] Fetching ${requests.length} tags for ${Object.keys(SPORT_TAG_MAP).length} sports`,
+  );
 
-  // Step 3: Process all requests with intelligent throttling
-  const allResults = await processWithThrottling(requests, startMin, startMax);
-  console.log(`[Discovery] Got events from ${allResults.length}/${requests.length} tags`);
+  // Fetch events with throttling
+  const allResults: Array<{ sport: string; events: GammaEvent[] }> = [];
+  for (let i = 0; i < requests.length; i += MAX_CONCURRENT) {
+    const chunk = requests.slice(i, i + MAX_CONCURRENT);
 
-  // Step 4: Extract and filter markets from events
+    const chunkResults = await Promise.allSettled(
+      chunk.map(async ({ sport, tagId }) => {
+        const events = await fetchEventsForTag(tagId);
+        return { sport, events };
+      }),
+    );
+
+    for (const r of chunkResults) {
+      if (r.status === "fulfilled" && r.value.events.length > 0) {
+        allResults.push(r.value);
+      }
+    }
+
+    if (i + MAX_CONCURRENT < requests.length) {
+      await sleep(REQUEST_DELAY_MS);
+    }
+  }
+
+  console.log(
+    `[Discovery] Got events from ${allResults.length}/${requests.length} tags`,
+  );
+
+  // Extract and filter markets from events
   const allMarkets: PolymarketMarket[] = [];
-  const SUPPORTED_SPORTS = [
-    "nfl",
-    "cfb",
-    "nba",
-    "ncaab",
-    "cbb",
-    "wnba",
-    "nhl",
-    "mlb",
-    "epl",
-    "lal",
-    "sea",
-    "bun",
-    "fl1",
-    "ere",
-    "mls",
-    "mex",
-    "arg",
-    "ucl",
-    "uel",
-    "wcq_europe", // FIFA World Cup Qualifiers - Europe (UEFA)
-    "wcq_south_america", // FIFA World Cup Qualifiers - South America (CONMEBOL)
-    "concacaf", // CONCACAF Nations League
-    "ipl",
-    "odi",
-    "t20",
-    "mma",
-  ];
 
   let totalEvents = 0;
   let noMarketsCount = 0;
   let noStartTimeCount = 0;
   let outsideWindowCount = 0;
-  let unsupportedSportCount = 0;
   let closedCount = 0;
   let noBidAskCount = 0;
   let lowLiquidityCount = 0;
@@ -423,11 +294,13 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
   for (const { sport, events } of allResults) {
     for (const event of events) {
       totalEvents++;
-      if (!event.markets || event.markets.length === 0) { noMarketsCount++; continue; }
+      if (!event.markets || event.markets.length === 0) {
+        noMarketsCount++;
+        continue;
+      }
 
       const eventStartTime = extractStartTime(event, undefined);
 
-      // Skip events with no valid start time or outside time window
       if (!eventStartTime) {
         noStartTimeCount++;
         continue;
@@ -437,15 +310,12 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
         continue;
       }
 
-      // Detect the actual sport from event metadata
-      const actualSport = detectSportFromEvent(event, sport.sport);
-
-      // Skip unsupported sports
-      if (!SUPPORTED_SPORTS.includes(actualSport)) { unsupportedSportCount++; continue; }
-
       for (const market of event.markets) {
         // Skip closed/inactive markets
-        if (market.closed || market.active === false) { closedCount++; continue; }
+        if (market.closed || market.active === false) {
+          closedCount++;
+          continue;
+        }
 
         // Skip markets with no orders in the order book
         const hasBid =
@@ -457,13 +327,19 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           market.bestAsk !== undefined &&
           market.bestAsk !== 0;
 
-        if (!hasBid && !hasAsk) { noBidAskCount++; continue; }
+        if (!hasBid && !hasAsk) {
+          noBidAskCount++;
+          continue;
+        }
 
         // Calculate liquidity
         const liquidity = calculateLiquidity(market);
 
         // Filter by minimum liquidity
-        if (liquidity < MIN_LIQUIDITY) { lowLiquidityCount++; continue; }
+        if (liquidity < MIN_LIQUIDITY) {
+          lowLiquidityCount++;
+          continue;
+        }
 
         // Filter out phantom markets (extreme spreads)
         const hasBidAsk =
@@ -494,31 +370,31 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
         const { homeTeam, awayTeam } = parseTeamNames(eventTitle);
         const marketType = detectMarketType(marketQuestion);
 
-        // Skip team totals and player props
-        const slug = (market.slug || "").toLowerCase();
+        // Skip team totals only (player props are now supported)
         const qLower = marketQuestion.toLowerCase();
-        if (
-          qLower.includes("team total") ||
-          slug.includes("-rush-") ||
-          slug.includes("-rec-") ||
-          slug.includes("-pass-") ||
-          slug.includes("-pts-") ||
-          slug.includes("-reb-") ||
-          slug.includes("-ast-") ||
-          slug.includes("-player-")
-        ) {
+        if (qLower.includes("team total")) {
           playerPropCount++;
           continue;
         }
 
         const polymarketMarket: PolymarketMarket = {
-          sport: actualSport,
+          sport,
           eventTitle,
           startTime: startTime.toISOString(),
           marketQuestion,
           marketType,
           liquidity,
         };
+
+        // Add player prop fields
+        if (marketType === "player_props") {
+          const propData = parsePlayerProp(marketQuestion);
+          if (propData) {
+            polymarketMarket.playerName = propData.playerName;
+            polymarketMarket.playerStatType = propData.statType;
+            polymarketMarket.playerLine = propData.line;
+          }
+        }
 
         // Add optional fields
         if (homeTeam) polymarketMarket.homeTeam = homeTeam;
@@ -612,8 +488,9 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
   console.log(`  Total events: ${totalEvents}`);
   console.log(`  Filtered — no markets: ${noMarketsCount}`);
   console.log(`  Filtered — no start time: ${noStartTimeCount}`);
-  console.log(`  Filtered — outside window (${HOURS_AHEAD}h): ${outsideWindowCount}`);
-  console.log(`  Filtered — unsupported sport: ${unsupportedSportCount}`);
+  console.log(
+    `  Filtered — outside window (${HOURS_AHEAD}h): ${outsideWindowCount}`,
+  );
   console.log(`  Filtered — closed/inactive: ${closedCount}`);
   console.log(`  Filtered — no bid/ask: ${noBidAskCount}`);
   console.log(`  Filtered — low liquidity: ${lowLiquidityCount}`);

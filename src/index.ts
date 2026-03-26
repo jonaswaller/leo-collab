@@ -54,9 +54,11 @@ import {
   POLLING_INTERVAL_MS,
   CLV_UPDATE_WINDOW_MS,
   TAKER_MIN_BOOKMAKERS,
+  MAX_PER_BUCKET_FRACTION,
 } from "./arb/config.js";
 
 const DRY_RUN = process.env.DRY_RUN !== "false"; // Default to dry-run for safety
+const LOG_UNMATCHED_LINES = process.env.LOG_UNMATCHED_LINES === "true"; // Toggle verbose unmatched line logging
 
 // ============================================================================
 // POLLING LOGIC
@@ -337,6 +339,8 @@ async function placeNewMakers(
 async function evaluateExistingMakers(
   currentMakers: MakerOpportunity[],
   positionMap: Map<string, EnrichedPosition>,
+  bucketExposureByKey: Map<string, number>,
+  totalCapitalUsd: number,
   dryRun: boolean,
 ): Promise<void> {
   try {
@@ -346,6 +350,8 @@ async function evaluateExistingMakers(
     for (const m of currentMakers) {
       makersByToken.set(m.tokenId, m);
     }
+
+    const maxBucketExposureUsd = totalCapitalUsd * MAX_PER_BUCKET_FRACTION;
 
     // Fetch current open orders from CLOB
     const openOrders = await fetchOpenOrders();
@@ -401,7 +407,13 @@ async function evaluateExistingMakers(
       const currentPosition = positionMap.get(maker.tokenId);
       const currentShares = currentPosition?.shares || 0;
       const targetShares = maker.kellySize.constrainedShares;
+      const currentBucketExposure = bucketExposureByKey.get(maker.bucketKey) || 0;
+      const bucketAtOrAboveLimit =
+        currentBucketExposure >= maxBucketExposureUsd - 1e-8;
       // small epsilon to avoid float noise
+      if (bucketAtOrAboveLimit) {
+        return true;
+      }
       return currentShares < targetShares - 1e-6;
     });
 
@@ -409,6 +421,8 @@ async function evaluateExistingMakers(
     const decision = await evaluateMakerOrders(
       makersForEvaluation,
       openOrders as any,
+      totalCapitalUsd,
+      bucketExposureByKey,
       liveBestPrices,
     );
 
@@ -609,17 +623,19 @@ async function runCycle(cycleNumber: number): Promise<number> {
       }
     }
 
-    // Log unmatched line details
-    const lineSkips = skipped.filter((m) =>
-      m.skipReason?.startsWith("No sportsbooks offer line"),
-    );
-    if (lineSkips.length > 0) {
-      console.log(`\n   Unmatched lines (${lineSkips.length}):`);
-      for (const m of lineSkips) {
-        console.log(
-          `     [${m.polymarket.sport}] ${m.polymarket.eventTitle} — ${m.polymarket.marketQuestion}`,
-        );
-        console.log(`       ${m.skipReason}`);
+    // Log unmatched line details (toggle with LOG_UNMATCHED_LINES=true)
+    if (LOG_UNMATCHED_LINES) {
+      const lineSkips = skipped.filter((m) =>
+        m.skipReason?.startsWith("No sportsbooks offer line"),
+      );
+      if (lineSkips.length > 0) {
+        console.log(`\n   Unmatched lines (${lineSkips.length}):`);
+        for (const m of lineSkips) {
+          console.log(
+            `     [${m.polymarket.sport}] ${m.polymarket.eventTitle} — ${m.polymarket.marketQuestion}`,
+          );
+          console.log(`       ${m.skipReason}`);
+        }
       }
     }
 
@@ -634,9 +650,18 @@ async function runCycle(cycleNumber: number): Promise<number> {
       markets,
       positions,
     );
+    const bucketExposureByKey = new Map<string, number>();
+    for (const snapshot of positionExposureSnapshots) {
+      if (!snapshot.bucketKey) continue;
+      const prev = bucketExposureByKey.get(snapshot.bucketKey) || 0;
+      bucketExposureByKey.set(
+        snapshot.bucketKey,
+        prev + snapshot.exposureUSD,
+      );
+    }
 
     // Add exposure from ALL currently tracked maker orders (open makers).
-    // This ensures maker notional counts toward per-market and per-event caps.
+    // This ensures maker notional counts toward per-market caps.
     const trackedMakers = await getTrackedMakerOrders();
     const makerExposureSnapshots =
       buildExposureSnapshotsFromMakerOrders(trackedMakers);
@@ -717,7 +742,13 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
     // Step 9: Evaluate existing maker orders
     console.log("\n🔍 Step 9: Evaluating existing maker orders...");
-    await evaluateExistingMakers(opportunities.makers, positionMap, DRY_RUN);
+    await evaluateExistingMakers(
+      opportunities.makers,
+      positionMap,
+      bucketExposureByKey,
+      capital.totalCapitalUSD,
+      DRY_RUN,
+    );
 
     // Step 10: Handle market states (cancel orders for live/closed markets)
     console.log("\n⚠️  Step 10: Checking market states...");

@@ -18,7 +18,11 @@ import {
   getTrackedMakerOrders,
   removeMakerOrder,
 } from "./maker-registry.js";
-import { MAKER_MARGINS, MAKER_EVAL_EV_DROP } from "./config.js";
+import {
+  MAKER_MARGINS,
+  MAKER_EVAL_EV_DROP,
+  MAX_PER_BUCKET_FRACTION,
+} from "./config.js";
 
 export interface MakerEvaluationDecision {
   /**
@@ -74,9 +78,12 @@ export interface MakerOrderDecisionDetail {
 export async function evaluateMakerOrders(
   currentMakers: MakerOpportunity[],
   openOrders: OpenOrder[],
+  totalCapitalUsd: number,
+  bucketExposureByKey: Map<string, number>,
   liveBestPrices?: Map<string, BestPrices>,
 ): Promise<MakerEvaluationDecision> {
   const tracked = await getTrackedMakerOrders();
+  const maxBucketExposureUsd = totalCapitalUsd * MAX_PER_BUCKET_FRACTION;
 
   const openById = new Map<string, OpenOrder>();
   for (const o of openOrders) {
@@ -151,6 +158,9 @@ export async function evaluateMakerOrders(
     const evAtPlacement = trackedOrder.evAtPlacement;
 
     const openPrice = parseFloat(open.price);
+    const originalSize = parseFloat(open.original_size || "0");
+    const matchedSize = parseFloat(open.size_matched || "0");
+    const remainingLiveShares = Math.max(0, originalSize - matchedSize);
     const tickSize = currentOpp.tickSize;
 
     // Prefer live best bid from the CLOB orderbook; fall back to analyzer/Gamma.
@@ -175,6 +185,9 @@ export async function evaluateMakerOrders(
     const evTooLow = currentEV < minEV;
     const evDroppedTooMuch = currentEV < evAtPlacement - MAKER_EVAL_EV_DROP;
     const evDrop = currentEV - evAtPlacement;
+    const currentBucketExposure = bucketExposureByKey.get(currentOpp.bucketKey) || 0;
+    const bucketAtOrAboveLimit =
+      currentBucketExposure >= maxBucketExposureUsd - 1e-8;
 
     // Kelly / partial-fill handling:
     // We treat an order as "fully satisfied" for the current cycle when the
@@ -199,6 +212,18 @@ export async function evaluateMakerOrders(
         )} >= current Kelly target ${currentKellyTarget.toFixed(
           4,
         )}; cancelling remaining live size.`,
+      );
+    } else if (bucketAtOrAboveLimit && remainingLiveShares > 1e-8) {
+      cancelOrderIds.push(trackedOrder.orderId);
+      action = "cancel";
+      reasons.push(
+        `Bucket exposure ${currentBucketExposure.toFixed(
+          2,
+        )} >= limit ${maxBucketExposureUsd.toFixed(
+          2,
+        )}; remaining live size ${remainingLiveShares.toFixed(
+          4,
+        )} would further breach the bucket cap if filled.`,
       );
     } else if (outbidByAtLeastOneTick) {
       // Outbid by >= 1 tick: always cancel stale order.

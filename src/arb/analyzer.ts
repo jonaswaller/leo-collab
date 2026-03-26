@@ -22,6 +22,7 @@ import {
   roundToWholePercent,
 } from "./calculator.js";
 import { MAKER_STRATEGY } from "./config.js";
+import { getCorrelationBucketKey } from "./risk-buckets.js";
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -96,7 +97,26 @@ function calculateMarketEV(
     let outcome2Price: number | null = null;
 
     for (const outcome of market.outcomes) {
-      if (pm.marketType === "spreads") {
+      if (pm.marketType === "player_props") {
+        // Player prop outcomes use description for player name, name for Over/Under
+        if (pm.playerLine !== undefined && pm.playerName && outcome.point !== undefined && outcome.description) {
+          if (Math.abs(outcome.point - pm.playerLine) < 0.01) {
+            // Verify player name matches
+            const pmPlayer = normalizeTeam(pm.playerName);
+            const oddsPlayer = normalizeTeam(outcome.description);
+            const playerMatch = pmPlayer === oddsPlayer ||
+              pmPlayer.includes(oddsPlayer) || oddsPlayer.includes(pmPlayer);
+            if (playerMatch) {
+              const outcomeLower = outcome.name.toLowerCase();
+              if (outcomeLower === "over") {
+                outcome1Price = outcome.price; // Over = Yes = Outcome 1
+              } else if (outcomeLower === "under") {
+                outcome2Price = outcome.price; // Under = No = Outcome 2
+              }
+            }
+          }
+        }
+      } else if (pm.marketType === "spreads") {
         if (pmLine !== null && outcome.point !== undefined) {
           if (
             pm.outcome1Name &&
@@ -150,6 +170,7 @@ function calculateMarketEV(
   }
 
   // Determine market type for proper de-vigging method selection
+  // Player props use totals-style devigging (O/U binary)
   const marketTypeForDevig =
     pm.marketType === "h2h"
       ? "h2h"
@@ -202,7 +223,8 @@ function calculateMarketEV(
   // Calculate Kelly sizing for taker opportunities
   const marketSlug =
     pm.marketSlug || pm.eventSlug || `${pm.eventTitle}-${pm.marketQuestion}`;
-  const eventSlug = pm.eventSlug || pm.eventTitle || "unknown";
+  const outcome1BucketKey = getCorrelationBucketKey(pm, 1);
+  const outcome2BucketKey = getCorrelationBucketKey(pm, 2);
   const takerMinimum = getTakerMinimum(
     pm.marketType,
     isFirstHalf(pm.marketQuestion),
@@ -211,7 +233,12 @@ function calculateMarketEV(
   let outcome1Kelly = null;
   let outcome2Kelly = null;
 
+  // Skip taker Kelly for player props — avoids consuming shared event
+  // exposure for orders we'll never place (calculateKellySize has side effects)
+  const skipTakerKelly = pm.marketType === "player_props";
+
   if (
+    !skipTakerKelly &&
     pm.bestAsk !== undefined &&
     outcome1EV !== null &&
     outcome1EV >= takerMinimum
@@ -221,11 +248,12 @@ function calculateMarketEV(
       pm.bestAsk,
       totalCapitalUsd,
       `${marketSlug}-outcome1`,
-      eventSlug,
+      outcome1BucketKey,
     );
   }
 
   if (
+    !skipTakerKelly &&
     pm.outcome2Ask !== undefined &&
     outcome2EV !== null &&
     outcome2EV >= takerMinimum
@@ -235,7 +263,7 @@ function calculateMarketEV(
       pm.outcome2Ask,
       totalCapitalUsd,
       `${marketSlug}-outcome2`,
-      eventSlug,
+      outcome2BucketKey,
     );
   }
 
@@ -294,7 +322,8 @@ function calculateMakerEV(
 
   const marketSlug =
     pm.marketSlug || pm.eventSlug || `${pm.eventTitle}-${pm.marketQuestion}`;
-  const eventSlug = pm.eventSlug || pm.eventTitle || "unknown";
+  const outcome1BucketKey = getCorrelationBucketKey(pm, 1);
+  const outcome2BucketKey = getCorrelationBucketKey(pm, 2);
 
   // Outcome 1 bid opportunity
   const outcome1BidTarget = fairProb1 - fairProb1 * marginRange.min;
@@ -348,7 +377,8 @@ function calculateMakerEV(
       outcome1BidPrice,
       totalCapitalUsd,
       `${marketSlug}-outcome1`,
-      eventSlug,
+      outcome1BucketKey,
+      { consumeBucketExposure: false },
     );
   }
 
@@ -401,7 +431,8 @@ function calculateMakerEV(
       outcome2BidPrice,
       totalCapitalUsd,
       `${marketSlug}-outcome2`,
-      eventSlug,
+      outcome2BucketKey,
+      { consumeBucketExposure: false },
     );
   }
 
@@ -452,12 +483,16 @@ export function analyzeOpportunities(
   }
 
   // Extract taker opportunities (only those that meet minimum thresholds)
+  // NOTE: Player props are excluded from taker orders
   const takers: TakerOpportunity[] = [];
 
   for (const match of matched) {
     if (!match.ev) continue;
 
     const pm = match.polymarket;
+
+    // No taker orders for player props
+    if (pm.marketType === "player_props") continue;
 
     // Skip if missing critical CLOB metadata
     if (!pm.clobTokenIds || pm.clobTokenIds.length < 2) {
@@ -549,9 +584,16 @@ export function analyzeOpportunities(
     }
 
     const firstHalf = isFirstHalf(pm.marketQuestion);
+    const makerOutcome1BucketKey = getCorrelationBucketKey(pm, 1);
+    const makerOutcome2BucketKey = getCorrelationBucketKey(pm, 2);
+
+    // Player props: only buy unders (outcome 2 = "No" = Under)
+    // Skip outcome 1 (Over) for player props
+    const skipOutcome1 = pm.marketType === "player_props";
 
     // Outcome 1 maker opportunity
     if (
+      !skipOutcome1 &&
       match.makerEV.outcome1BidKelly &&
       match.makerEV.outcome1BidPrice !== null
     ) {
@@ -565,6 +607,7 @@ export function analyzeOpportunities(
         marketQuestion: pm.marketQuestion,
         sport: pm.sport,
         marketType: pm.marketType,
+        bucketKey: makerOutcome1BucketKey,
         isFirstHalf: firstHalf,
         outcome: 1,
         outcomeName: pm.outcome1Name || "Outcome 1",
@@ -600,6 +643,7 @@ export function analyzeOpportunities(
         marketQuestion: pm.marketQuestion,
         sport: pm.sport,
         marketType: pm.marketType,
+        bucketKey: makerOutcome2BucketKey,
         isFirstHalf: firstHalf,
         outcome: 2,
         outcomeName: pm.outcome2Name || "Outcome 2",

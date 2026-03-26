@@ -44,12 +44,15 @@ async function initClobClient(): Promise<ClobClient> {
     funderAddress,
   );
 
-  // Derive API creds, with fallback to derive-only if create fails.
+  // Derive existing API key (create is unnecessary — key already exists for this wallet).
+  // Using deriveApiKey() directly avoids the noisy console.error from the library's
+  // HTTP error handler when createApiKey() gets a 400 "Could not create api key".
   let creds: any;
   try {
-    creds = await client.createOrDeriveApiKey();
-  } catch {
     creds = await client.deriveApiKey();
+  } catch {
+    // First-time wallets need create; fall back to createOrDeriveApiKey.
+    creds = await client.createOrDeriveApiKey();
   }
 
   // Re-construct with creds set.

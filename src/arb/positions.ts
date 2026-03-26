@@ -4,6 +4,7 @@ import { PolymarketMarket } from "./types.js";
 import { getClobClient } from "./clob.js";
 import { ExposureSnapshot } from "./calculator.js";
 import type { TrackedMakerOrder } from "./maker-registry.js";
+import { getCorrelationBucketKey } from "./risk-buckets.js";
 
 const DATA_API_BASE =
   process.env.POLYMARKET_DATA_API_URL?.trim() ||
@@ -85,6 +86,7 @@ export interface EnrichedPosition {
   marketSlug?: string | undefined;
   eventSlug?: string | undefined;
   outcomeName?: string | undefined;
+  bucketKey?: string | undefined;
 
   // Position details
   shares: number;
@@ -137,6 +139,7 @@ export function buildEnrichedPositions(
     let sport: string | undefined;
     let marketSlug: string | undefined;
     let eventSlug: string | undefined;
+    let bucketKey: string | undefined;
     let currentMarketPrice = raw.curPrice || 0;
 
     if (market) {
@@ -148,11 +151,13 @@ export function buildEnrichedPositions(
         const idx = market.clobTokenIds.indexOf(tokenId);
         if (idx === 0) {
           outcomeName = market.outcome1Name;
+          bucketKey = getCorrelationBucketKey(market, 1);
           // Use Gamma price if available (lastPrice or bestAsk), otherwise use Data API price
           currentMarketPrice =
             market.lastPrice || market.bestAsk || currentMarketPrice;
         } else if (idx === 1) {
           outcomeName = market.outcome2Name;
+          bucketKey = getCorrelationBucketKey(market, 2);
           // Use Gamma price if available (outcome2Ask), otherwise use Data API price
           currentMarketPrice = market.outcome2Ask || currentMarketPrice;
         }
@@ -174,6 +179,7 @@ export function buildEnrichedPositions(
       marketSlug,
       eventSlug,
       outcomeName,
+      bucketKey,
       shares,
       avgEntryPrice,
       currentMarketPrice,
@@ -194,7 +200,7 @@ export function buildEnrichedPositions(
  *
  * This is the glue between account-level positions and the Kelly engine:
  * - marketKey: we prefer the Polymarket market slug if available
- * - eventKey: we prefer the Polymarket event slug if available
+ * - bucketKey: derived from the market's correlation bucket
  * - exposureUSD: current market value of the position
  */
 export function buildExposureSnapshotsFromPositions(
@@ -212,11 +218,11 @@ export function buildExposureSnapshotsFromPositions(
       p.marketSlug ||
       (p.eventSlug ? `${p.eventSlug}:${p.conditionId}` : p.conditionId);
 
-    const eventKey = p.eventSlug || p.marketSlug || p.conditionId;
+    const bucketKey = p.bucketKey || marketKey;
 
     snapshots.push({
       marketKey,
-      eventKey,
+      bucketKey,
       exposureUSD: p.currentValueUSD,
     });
   }
@@ -228,9 +234,7 @@ export function buildExposureSnapshotsFromPositions(
  * Build ExposureSnapshot objects from currently tracked MAKER orders.
  *
  * This treats the notional size of each live maker order (price * shares) as
- * part of our exposure limits. Combined with calculateKellySize() updating
- * currentPositions incrementally, this fixes:
- * - LEAK C: maker orders not counted toward per-market / per-event caps.
+ * part of our per-market exposure limits.
  *
  * NOTE: TrackedMakerOrder.size is in SHARES, targetPrice is in PROBABILITY
  * (0-1). exposureUSD = size * targetPrice.
@@ -245,11 +249,9 @@ export function buildExposureSnapshotsFromMakerOrders(
     if (!Number.isFinite(exposureUSD) || exposureUSD <= 0) continue;
 
     const marketKey = m.marketSlug || `${m.eventSlug || ""}:${m.tokenId}`;
-    const eventKey = m.eventSlug || m.marketSlug || m.tokenId;
 
     snapshots.push({
       marketKey,
-      eventKey,
       exposureUSD,
     });
   }

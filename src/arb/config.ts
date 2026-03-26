@@ -9,7 +9,7 @@
 // Polymarket Market Discovery
 // ============================================================================
 
-export const HOURS_AHEAD = 12;
+export const HOURS_AHEAD = 24;
 
 // ============================================================================
 // API CONFIGURATION
@@ -124,6 +124,7 @@ export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
   h2h_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
   spreads_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
   totals_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
+  player_props: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
 };
 
 // ============================================================================
@@ -135,12 +136,12 @@ export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
 export const TAKER_MIN_BOOKMAKERS = 4;
 
 export const TAKER_MARGINS: Record<string, number> = {
-  h2h: 0.03 + MARGIN_ADJUSTMENT, // 2% minimum for moneyline
-  spreads: 0.04 + MARGIN_ADJUSTMENT, // 3% minimum for spreads
-  totals: 0.075 + MARGIN_ADJUSTMENT, // 3% minimum for totals
-  h2h_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half moneyline
-  spreads_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half spreads
-  totals_h1: 0.06 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half totals
+  h2h: 0.06 + MARGIN_ADJUSTMENT, // 2% minimum for moneyline
+  spreads: 0.08 + MARGIN_ADJUSTMENT, // 3% minimum for spreads
+  totals: 0.08 + MARGIN_ADJUSTMENT, // 3% minimum for totals
+  h2h_h1: 0.10 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half moneyline
+  spreads_h1: 0.10 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half spreads
+  totals_h1: 0.10 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half totals
 };
 
 // ============================================================================
@@ -149,7 +150,7 @@ export const TAKER_MARGINS: Record<string, number> = {
 
 export const KELLY_MULTIPLIER = 0.4; // Half Kelly (conservative)
 export const MAX_PER_MARKET_FRACTION = 0.04; // 3% of bankroll per market - enforced per order immediately
-export const MAX_PER_EVENT_FRACTION = 0.07; // WAS 7% of bankroll per event - enforced only on ACTUAL position value, not on the sum of open orders
+export const MAX_PER_BUCKET_FRACTION = 0.07; // 7% of bankroll per correlation bucket
 export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come from wallet.ts in production
 
 // ============================================================================
