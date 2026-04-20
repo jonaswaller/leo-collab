@@ -53,7 +53,7 @@ import { trackMakerFills } from "./storage/tracking.js";
 import {
   POLLING_INTERVAL_MS,
   CLV_UPDATE_WINDOW_MS,
-  TAKER_MIN_BOOKMAKERS,
+  getMinBookmakers,
   MAX_PER_BUCKET_FRACTION,
 } from "./arb/config.js";
 
@@ -116,9 +116,10 @@ async function executeTakers(
 
   for (const taker of takers) {
     // Skip if not enough bookmakers for reliable EV calculation
-    if (taker.bookmakers.length < TAKER_MIN_BOOKMAKERS) {
+    const minBooks = getMinBookmakers(taker.marketType);
+    if (taker.bookmakers.length < minBooks) {
       console.log(
-        `   ⏭️  Skipping ${taker.marketSlug} (${taker.outcomeName}): only ${taker.bookmakers.length} bookmakers (need ${TAKER_MIN_BOOKMAKERS})`,
+        `   ⏭️  Skipping ${taker.marketSlug} (${taker.outcomeName}): only ${taker.bookmakers.length} bookmakers (need ${minBooks})`,
       );
       continue;
     }
@@ -235,6 +236,17 @@ async function placeNewMakers(
   console.log(`\n💎 Placing ${makers.length} maker orders...`);
 
   for (const maker of makers) {
+    // Skip if not enough bookmakers for reliable EV calculation. Per-type
+    // threshold — default 3, but NRFI accepts 1 (Pinnacle-only) since that's
+    // the industry-standard source for 1st-inning totals.
+    const minBooks = getMinBookmakers(maker.marketType);
+    if (maker.bookmakers.length < minBooks) {
+      console.log(
+        `   ⏭️  Skipping ${maker.marketSlug} (${maker.outcomeName}): only ${maker.bookmakers.length} bookmakers (need ${minBooks})`,
+      );
+      continue;
+    }
+
     const currentPosition = positionMap.get(maker.tokenId);
     const currentShares = currentPosition?.shares || 0;
 
@@ -725,9 +737,13 @@ async function runCycle(cycleNumber: number): Promise<number> {
       `   ✓ Found ${opportunities.takers.length} takers, ${opportunities.makers.length} makers in ${analyzeTime}s`,
     );
 
-    // Step 6: Execute takers (immediate)
-    console.log("\n🎯 Step 6: Executing taker orders...");
-    await executeTakers(opportunities.takers, positionMap, DRY_RUN);
+    // Step 6: Takers DISABLED — stored fair_prob_at_placement is being
+    // inflated for takers (see DEBUG CONSENSUS log in analyzer.ts). Every
+    // taker in the last run had ~0% real EV despite 6-27% claimed. Re-enable
+    // only after the debug log identifies the root cause.
+    console.log(
+      `\n🎯 Step 6: Takers DISABLED (skipping ${opportunities.takers.length} opportunities)`,
+    );
 
     // Step 7: Place new maker orders
     console.log("\n💎 Step 7: Placing new maker orders...");

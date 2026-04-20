@@ -57,6 +57,15 @@ export function getCorrelationBucketKey(
     return `event:${eventBase}:scope:${scope}:game_total`;
   }
 
+  // NRFI is uncorrelated with full-game lines but YES/NO sides within NRFI
+  // are perfectly anti-correlated. Bucket by outcome side so two NRFI bets
+  // on the same game same side (only possible across lines) would share,
+  // but YES and NO of the same NRFI stay separate.
+  if (market.marketType === "nrfi") {
+    const side = outcome === 1 ? "yes" : outcome === 2 ? "no" : "side";
+    return `event:${eventBase}:scope:1st_inning:nrfi:${side}`;
+  }
+
   if (
     (market.marketType === "h2h" || market.marketType === "spreads") &&
     outcome

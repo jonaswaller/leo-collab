@@ -57,6 +57,12 @@ function extractLine(question: string, marketType: string): number | null {
     return match && match[1] ? parseFloat(match[1]) : null;
   }
 
+  // NRFI ("Will there be a run scored in the first inning?") is always O/U
+  // 0.5 on 1st-inning runs. Keep in sync with matcher.ts:extractLine().
+  if (marketType === "nrfi") {
+    return 0.5;
+  }
+
   return null;
 }
 
@@ -148,6 +154,21 @@ function calculateMarketEV(
             }
           }
         }
+      } else if (pm.marketType === "nrfi") {
+        // NRFI markets: Polymarket outcomes are ["Yes", "No"] and sportsbook
+        // outcomes are ["Over", "Under"] at point 0.5.
+        //   PM outcome 1 "Yes" (run will score) = sportsbook Over 0.5
+        //   PM outcome 2 "No"  (no run)          = sportsbook Under 0.5
+        if (pmLine !== null && outcome.point !== undefined) {
+          if (Math.abs(outcome.point - pmLine) < 0.01) {
+            const outcomeLower = outcome.name.toLowerCase();
+            if (outcomeLower === "over") {
+              outcome1Price = outcome.price;
+            } else if (outcomeLower === "under") {
+              outcome2Price = outcome.price;
+            }
+          }
+        }
       } else {
         if (pm.outcome1Name && teamsMatch(pm.outcome1Name, outcome.name)) {
           outcome1Price = outcome.price;
@@ -169,8 +190,9 @@ function calculateMarketEV(
     }
   }
 
-  // Determine market type for proper de-vigging method selection
-  // Player props use totals-style devigging (O/U binary)
+  // Determine market type for proper de-vigging method selection.
+  // Player props and NRFI are both 2-way O/U binaries — use totals-style
+  // (Probit) devigging.
   const marketTypeForDevig =
     pm.marketType === "h2h"
       ? "h2h"
@@ -182,6 +204,25 @@ function calculateMarketEV(
     bookmakerOdds,
     marketTypeForDevig,
   );
+
+  // DEBUG: dump consensus inputs + outputs so we can diagnose the
+  // taker fair-prob corruption bug. Remove after root cause is found.
+  console.log("[DEBUG CONSENSUS]", JSON.stringify({
+    slug: pm.marketSlug,
+    marketType: pm.marketType,
+    marketTypeForDevig,
+    outcome1Name: pm.outcome1Name,
+    outcome2Name: pm.outcome2Name,
+    homeTeam: pm.homeTeam,
+    awayTeam: pm.awayTeam,
+    bestBid: pm.bestBid,
+    bestAsk: pm.bestAsk,
+    outcome2Bid: pm.outcome2Bid,
+    outcome2Ask: pm.outcome2Ask,
+    inputs: bookmakerOdds,
+    consensus,
+  }));
+
   if (!consensus) return;
 
   // Store consensus probability for CLV tracking
@@ -233,9 +274,11 @@ function calculateMarketEV(
   let outcome1Kelly = null;
   let outcome2Kelly = null;
 
-  // Skip taker Kelly for player props — avoids consuming shared event
-  // exposure for orders we'll never place (calculateKellySize has side effects)
-  const skipTakerKelly = pm.marketType === "player_props";
+  // Skip taker Kelly for markets we never execute as takers (player props,
+  // NRFI). calculateKellySize has side effects on currentPositions so we
+  // avoid consuming shared event exposure for orders we'll never place.
+  const skipTakerKelly =
+    pm.marketType === "player_props" || pm.marketType === "nrfi";
 
   if (
     !skipTakerKelly &&
@@ -483,7 +526,7 @@ export function analyzeOpportunities(
   }
 
   // Extract taker opportunities (only those that meet minimum thresholds)
-  // NOTE: Player props are excluded from taker orders
+  // NOTE: Player props and NRFI are excluded from taker orders
   const takers: TakerOpportunity[] = [];
 
   for (const match of matched) {
@@ -491,8 +534,8 @@ export function analyzeOpportunities(
 
     const pm = match.polymarket;
 
-    // No taker orders for player props
-    if (pm.marketType === "player_props") continue;
+    // No taker orders for player props or NRFI (thin coverage, high variance)
+    if (pm.marketType === "player_props" || pm.marketType === "nrfi") continue;
 
     // Skip if missing critical CLOB metadata
     if (!pm.clobTokenIds || pm.clobTokenIds.length < 2) {

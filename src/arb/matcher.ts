@@ -89,6 +89,13 @@ function extractLine(question: string, marketType: MarketType): number | null {
     return match && match[1] ? parseFloat(match[1]) : null;
   }
 
+  // NRFI ("Will there be a run scored in the first inning?") is conceptually
+  // an Over/Under 0.5 market on 1st-inning runs. No line in the question —
+  // it's always 0.5.
+  if (marketType === "nrfi") {
+    return 0.5;
+  }
+
   return null;
 }
 
@@ -111,6 +118,51 @@ function getOddsAPIMarketKey(
     if (marketType === "totals") return "totals_h1";
   }
   return marketType;
+}
+
+const EVENT_MATCH_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+function findMatchingOddsEvent(
+  pmMarket: PolymarketMarket,
+  oddsEvents: OddsAPIEvent[],
+): OddsAPIEvent | undefined {
+  const pmStartMs = new Date(pmMarket.startTime).getTime();
+
+  let fallbackEvent: OddsAPIEvent | undefined;
+  let bestEvent: OddsAPIEvent | undefined;
+  let bestDiffMs = Infinity;
+
+  for (const event of oddsEvents) {
+    const homeMatch = teamsMatch(pmMarket.homeTeam!, event.home_team);
+    const awayMatch = teamsMatch(pmMarket.awayTeam!, event.away_team);
+    const homeMatchReversed = teamsMatch(pmMarket.homeTeam!, event.away_team);
+    const awayMatchReversed = teamsMatch(pmMarket.awayTeam!, event.home_team);
+    const namesMatch =
+      (homeMatch && awayMatch) || (homeMatchReversed && awayMatchReversed);
+
+    if (!namesMatch) continue;
+
+    const commenceMs = new Date(event.commence_time).getTime();
+    if (!Number.isFinite(pmStartMs) || !Number.isFinite(commenceMs)) {
+      if (!fallbackEvent) fallbackEvent = event;
+      continue;
+    }
+
+    const timeDiffMs = Math.abs(commenceMs - pmStartMs);
+    if (timeDiffMs >= EVENT_MATCH_WINDOW_MS) {
+      console.log(
+        `[Match] Rejected ${pmMarket.homeTeam}/${pmMarket.awayTeam}: names match but time diff ${(timeDiffMs / 3600000).toFixed(1)}h (pm=${pmMarket.startTime}, odds=${event.commence_time})`,
+      );
+      continue;
+    }
+
+    if (timeDiffMs < bestDiffMs) {
+      bestDiffMs = timeDiffMs;
+      bestEvent = event;
+    }
+  }
+
+  return bestEvent ?? fallbackEvent;
 }
 
 // ============================================================================
@@ -138,15 +190,10 @@ function matchMarket(
     return result;
   }
 
-  // Find matching event
-  // Try both directions since Polymarket and sportsbooks may have home/away swapped
-  const matchingEvent = oddsEvents.find((event) => {
-    const homeMatch = teamsMatch(pmMarket.homeTeam!, event.home_team);
-    const awayMatch = teamsMatch(pmMarket.awayTeam!, event.away_team);
-    const homeMatchReversed = teamsMatch(pmMarket.homeTeam!, event.away_team);
-    const awayMatchReversed = teamsMatch(pmMarket.awayTeam!, event.home_team);
-    return (homeMatch && awayMatch) || (homeMatchReversed && awayMatchReversed);
-  });
+  // Find the closest sportsbook event that matches team names and falls
+  // inside the 3h time window. This avoids depending on API array order when
+  // the same teams appear multiple times (back-to-backs, doubleheaders).
+  const matchingEvent = findMatchingOddsEvent(pmMarket, oddsEvents);
 
   if (!matchingEvent) {
     result.skipReason = "Event not found in sportsbooks";
@@ -235,6 +282,13 @@ function matchMarket(
     } else {
       possibleMarketKeys.push("totals", "alternate_totals");
     }
+  } else if (pmMarket.marketType === "nrfi") {
+    // NRFI/YRFI = Over/Under 0.5 runs in 1st inning. Non-featured market on
+    // the Odds API, only available through event-odds / alternate endpoints.
+    possibleMarketKeys.push(
+      "totals_1st_1_innings",
+      "alternate_totals_1st_1_innings",
+    );
   }
 
   // Match each bookmaker
@@ -244,8 +298,12 @@ function matchMarket(
     // Try to find a matching market with the exact line
     let oddsMarket = undefined;
 
-    if (pmMarket.marketType === "spreads" || pmMarket.marketType === "totals") {
-      // For spreads/totals, find a market that has the exact line
+    if (
+      pmMarket.marketType === "spreads" ||
+      pmMarket.marketType === "totals" ||
+      pmMarket.marketType === "nrfi"
+    ) {
+      // For spreads/totals/nrfi, find a market that has the exact line
       if (pmLine === null) continue;
 
       for (const marketKey of possibleMarketKeys) {

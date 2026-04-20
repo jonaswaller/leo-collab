@@ -159,6 +159,13 @@ function detectMarketType(question: string): MarketType {
     return "player_props";
   }
 
+  // NRFI/YRFI must be checked before "totals"/"will/win" since the question
+  // contains both "will" and "first inning" but is neither an h2h nor a
+  // generic totals market. Matches "first inning" or "1st inning".
+  if (/\b(first|1st)\s+inning\b/i.test(question)) {
+    return "nrfi";
+  }
+
   if (q.includes("o/u") || q.includes("over/under") || q.includes("total")) {
     return "totals";
   }

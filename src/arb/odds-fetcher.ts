@@ -27,12 +27,20 @@ interface EventMarketNeeds {
   hasFirstHalfH2H: boolean;
   hasFirstHalfSpreads: boolean;
   hasFirstHalfTotals: boolean;
+  hasNRFI: boolean; // MLB YRFI/NRFI — O/U 0.5 runs 1st inning
   playerPropKeys: Set<string>; // e.g. "player_points", "player_rebounds"
 }
 
 interface SportMarketNeeds {
   hasSpreadsOrTotals: boolean;
   hasFirstHalf: boolean;
+}
+
+interface PolymarketEventRef {
+  key: string;
+  home: string;
+  away: string;
+  startTimeMs: number;
 }
 
 // ============================================================================
@@ -45,6 +53,49 @@ function normalizeTeam(name: string): string {
     .replace(/\s+/g, " ")
     .replace(/[^a-z0-9\s]/g, "")
     .trim();
+}
+
+const EVENT_MATCH_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+function teamsMatch(left: string, right: string): boolean {
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function findMatchingPolymarketEventKey(
+  event: OddsAPIEvent,
+  polymarketEvents: PolymarketEventRef[],
+): string | null {
+  const homeNorm = normalizeTeam(event.home_team);
+  const awayNorm = normalizeTeam(event.away_team);
+  const commenceMs = new Date(event.commence_time).getTime();
+
+  let fallbackKey: string | null = null;
+  let bestKey: string | null = null;
+  let bestDiffMs = Infinity;
+
+  for (const pmEvent of polymarketEvents) {
+    const directMatch =
+      teamsMatch(pmEvent.home, homeNorm) && teamsMatch(pmEvent.away, awayNorm);
+    const reversedMatch =
+      teamsMatch(pmEvent.home, awayNorm) && teamsMatch(pmEvent.away, homeNorm);
+
+    if (!directMatch && !reversedMatch) continue;
+
+    if (!Number.isFinite(commenceMs) || !Number.isFinite(pmEvent.startTimeMs)) {
+      if (!fallbackKey) fallbackKey = pmEvent.key;
+      continue;
+    }
+
+    const timeDiffMs = Math.abs(commenceMs - pmEvent.startTimeMs);
+    if (timeDiffMs >= EVENT_MATCH_WINDOW_MS) continue;
+
+    if (timeDiffMs < bestDiffMs) {
+      bestDiffMs = timeDiffMs;
+      bestKey = pmEvent.key;
+    }
+  }
+
+  return bestKey ?? fallbackKey;
 }
 
 function isFirstHalf(question: string): boolean {
@@ -112,6 +163,11 @@ function buildEventMarketParams(needs?: EventMarketNeeds): string[] {
 
   if (needs.hasTotals) {
     markets.push("alternate_totals");
+  }
+
+  if (needs.hasNRFI) {
+    // 1st-inning totals — non-featured market, only available via event-odds
+    markets.push("totals_1st_1_innings", "alternate_totals_1st_1_innings");
   }
 
   // Player prop market keys — request both base and alternate lines
@@ -189,7 +245,7 @@ async function runRateLimited<T>(
  */
 async function fetchBaseOddsForSport(
   sportKey: string,
-  allPolymarketEvents: Set<string>,
+  polymarketEvents: PolymarketEventRef[],
 ): Promise<{ events: OddsAPIEvent[]; matchedEventKeys: Map<string, string> }> {
   try {
     const response = await axios.get<OddsAPIEvent[]>(
@@ -209,26 +265,11 @@ async function fetchBaseOddsForSport(
     const matchedEventKeys = new Map<string, string>();
 
     const events = allEvents.filter((event) => {
-      const homeNorm = normalizeTeam(event.home_team);
-      const awayNorm = normalizeTeam(event.away_team);
+      const pmEventKey = findMatchingPolymarketEventKey(event, polymarketEvents);
+      if (!pmEventKey) return false;
 
-      for (const pmEventKey of allPolymarketEvents) {
-        const [pmHome, pmAway] = pmEventKey.split("|");
-        if (!pmHome || !pmAway) continue;
-
-        const match1 =
-          (homeNorm.includes(pmHome) || pmHome.includes(homeNorm)) &&
-          (awayNorm.includes(pmAway) || pmAway.includes(awayNorm));
-        const match2 =
-          (homeNorm.includes(pmAway) || pmAway.includes(homeNorm)) &&
-          (awayNorm.includes(pmHome) || pmHome.includes(awayNorm));
-
-        if (match1 || match2) {
-          matchedEventKeys.set(event.id, pmEventKey);
-          return true;
-        }
-      }
-      return false;
+      matchedEventKeys.set(event.id, pmEventKey);
+      return true;
     });
 
     return { events, matchedEventKeys };
@@ -327,12 +368,13 @@ export async function fetchOddsForMarkets(
   );
 
   // Step 2: Build sets of Polymarket events per sport
-  const allPolymarketEventsBySport: Record<string, Set<string>> = {};
+  const allPolymarketEventsBySport: Record<string, PolymarketEventRef[]> = {};
   const eventNeedsBySport: Record<string, Map<string, EventMarketNeeds>> = {};
   const sportFallbackNeedsBySport: Record<string, SportMarketNeeds> = {};
 
   for (const [pmSport, sportMarkets] of Object.entries(marketsBySport)) {
-    const allEvents = new Set<string>();
+    const allEvents: PolymarketEventRef[] = [];
+    const seenEventKeys = new Set<string>();
     const eventNeeds = new Map<string, EventMarketNeeds>();
     let hasSpreadsOrTotals = false;
     let hasFirstHalf = false;
@@ -342,8 +384,16 @@ export async function fetchOddsForMarkets(
       if (market.homeTeam && market.awayTeam) {
         const homeNorm = normalizeTeam(market.homeTeam);
         const awayNorm = normalizeTeam(market.awayTeam);
-        const eventKey = `${homeNorm}|${awayNorm}`;
-        allEvents.add(eventKey);
+        const eventKey = `${homeNorm}|${awayNorm}|${market.startTime}`;
+        if (!seenEventKeys.has(eventKey)) {
+          allEvents.push({
+            key: eventKey,
+            home: homeNorm,
+            away: awayNorm,
+            startTimeMs: new Date(market.startTime).getTime(),
+          });
+          seenEventKeys.add(eventKey);
+        }
 
         const needs = eventNeeds.get(eventKey) || {
           hasH2H: false,
@@ -352,6 +402,7 @@ export async function fetchOddsForMarkets(
           hasFirstHalfH2H: false,
           hasFirstHalfSpreads: false,
           hasFirstHalfTotals: false,
+          hasNRFI: false,
           playerPropKeys: new Set<string>(),
         };
 
@@ -387,6 +438,8 @@ export async function fetchOddsForMarkets(
             needs.hasTotals = true;
             hasSpreadsOrTotals = true;
           }
+        } else if (market.marketType === "nrfi") {
+          needs.hasNRFI = true;
         }
 
         eventNeeds.set(eventKey, needs);
@@ -418,7 +471,7 @@ export async function fetchOddsForMarkets(
   const baseTasks = sportEntries.map(({ pmSport, oddsApiSport }) => () =>
     fetchBaseOddsForSport(
       oddsApiSport,
-      allPolymarketEventsBySport[pmSport] || new Set<string>(),
+      allPolymarketEventsBySport[pmSport] || [],
     ),
   );
 
@@ -438,6 +491,7 @@ export async function fetchOddsForMarkets(
   for (let i = 0; i < sportEntries.length; i++) {
     const { pmSport, oddsApiSport } = sportEntries[i]!;
     const { events, matchedEventKeys } = baseResults[i]!;
+    const polymarketEvents = allPolymarketEventsBySport[pmSport] || [];
     const eventNeeds =
       eventNeedsBySport[pmSport] || new Map<string, EventMarketNeeds>();
     const sportFallbackNeeds = sportFallbackNeedsBySport[pmSport] || {
@@ -451,8 +505,10 @@ export async function fetchOddsForMarkets(
     for (const event of events) {
       const pmEventKey =
         matchedEventKeys.get(event.id) ||
-        `${normalizeTeam(event.home_team)}|${normalizeTeam(event.away_team)}`;
-      let marketsForEvent = buildEventMarketParams(eventNeeds.get(pmEventKey));
+        findMatchingPolymarketEventKey(event, polymarketEvents);
+      let marketsForEvent = pmEventKey
+        ? buildEventMarketParams(eventNeeds.get(pmEventKey))
+        : [];
       let usedFallback = false;
 
       if (marketsForEvent.length === 0) {

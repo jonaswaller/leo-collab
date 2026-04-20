@@ -22,55 +22,54 @@ export const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 // BOOKMAKER CONFIGURATION
 // ============================================================================
 
-// Bookmakers to fetch odds from (expanded list for better coverage)
+// Bookmakers to fetch odds from.
+//
+// This list MUST stay in sync with BOOKMAKER_WEIGHTS below: any key fetched
+// here but missing a weight gets silently treated as weight 0 by the
+// consensus calculator. That inflates the bookmaker *count* (used by
+// `getMinBookmakers` gating in index.ts) without contributing to fair prob,
+// so a market could pass a "3 books required" check while the fair price
+// actually comes from 1 weighted book.
 export const BOOKMAKERS = [
   // Tier 1: Sharp books
   "pinnacle",
   "betonlineag",
   "betanysports",
-  "lowvig",
   // Tier 2: Euro/regional books
   "marathonbet",
   "unibet_uk",
-  "unibet_fr",
-  "unibet_it",
-  "unibet_nl",
-  "unibet_se",
   "sport888",
   // Tier 3: US recreational books
   "draftkings",
   "fanduel",
-  "betmgm",
-  "williamhill_us",
 ];
 
 /**
- * Brand-level bookmaker weights for consensus calculation
+ * Brand-level bookmaker weights for consensus calculation.
  *
- * Tier 1 (0.80): Sharp/reduced-juice books with best price discovery
- * Tier 2 (0.15): Solid Euro/regional books
- * Tier 3 (0.05): US recreational books (for market coverage)
+ * Every key here MUST also appear in BOOKMAKERS above (and vice versa) —
+ * the count gating in index.ts reads bookmakers present in the odds
+ * response, so any imbalance between this map and the fetch list
+ * silently breaks the min-bookmaker guard.
  *
- * Weights are brand-level, not region-level. Multiple region codes
- * (e.g., us.betonlineag, eu.betonlineag) map to the same brand weight.
- *
- * Total must sum to 1.0 for proper weighted averaging.
+ * Weights don't need to sum to 1.0 — the consensus calculator normalizes
+ * whatever books are actually present per market (calculator.ts:378).
+ * Relative magnitudes are what matter.
  */
 export const BOOKMAKER_WEIGHTS: Record<string, number> = {
-  // Tier 1: Core sharp books (0.72 total)
+  // Tier 1: Core sharp books
   pinnacle: 0.4, // Gold standard for sharp lines
   marathonbet: 0.15, // Low-margin Euro sharp book
   betonlineag: 0.1, // Competitive odds and reduced juice
   betanysports: 0.07, // Sharp and high-limit
 
-  // Tier 2: Euro/regional books (0.07 total)
-  unibet_uk: 0.04, // Consolidated from all Unibet regions (UK/FR/IT/NL/SE)
+  // Tier 2: Euro/regional books
+  unibet_uk: 0.04,
   sport888: 0.03, // Recreational UK-facing book, limited sharpness
 
-  // Tier 3: US recreational books (0.21 total)
+  // Tier 3: US recreational books
   draftkings: 0.1, // Mixed book, moderate sharp influence
   fanduel: 0.07, // Market coverage, moderately sharp
-  fanatics: 0.04, // Better than BetMGM; solid mid-tier US book
 };
 
 // ============================================================================
@@ -124,16 +123,33 @@ export const MAKER_MARGINS: Record<string, { min: number; max: number }> = {
   h2h_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
   spreads_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
   totals_h1: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
-  player_props: { min: 0.06 + MARGIN_ADJUSTMENT, max: 0.12 + MARGIN_ADJUSTMENT },
+  player_props: { min: 0.07 + MARGIN_ADJUSTMENT, max: 0.14 + MARGIN_ADJUSTMENT },
+  // NRFI/YRFI: 2-way O/U 0.5 runs in 1st inning. Volatile single-inning
+  // outcome, thin book coverage (Pinnacle/DK/FD mostly), so we require wider
+  // margin than full-game totals to compensate for higher variance.
+  nrfi: { min: 0.07 + MARGIN_ADJUSTMENT, max: 0.13 + MARGIN_ADJUSTMENT },
 };
 
 // ============================================================================
 // MARKET TAKER MINIMUM EV THRESHOLDS (by market type)
 // ============================================================================
 
-// Minimum number of bookmakers required for taker order execution
-// Orders calculated with fewer bookmakers will be skipped
-export const TAKER_MIN_BOOKMAKERS = 4;
+// Minimum number of bookmakers required for ANY order (taker or maker).
+// Default is 3 — markets with fewer books lack cross-validation, so a
+// single book with a stale or anomalous line produces unreliable fair probs.
+//
+// NRFI is an exception: industry-wide, Pinnacle is the primary source for
+// 1st-inning totals and most other books don't publish them at all. Gating
+// NRFI at 3 would kill the market entirely, so we accept Pinnacle-only
+// consensus for it.
+export const MIN_BOOKMAKERS_DEFAULT = 3;
+export const MIN_BOOKMAKERS_BY_TYPE: Record<string, number> = {
+  nrfi: 1,
+};
+
+export function getMinBookmakers(marketType: string): number {
+  return MIN_BOOKMAKERS_BY_TYPE[marketType] ?? MIN_BOOKMAKERS_DEFAULT;
+}
 
 export const TAKER_MARGINS: Record<string, number> = {
   h2h: 0.06 + MARGIN_ADJUSTMENT, // 2% minimum for moneyline
@@ -142,6 +158,7 @@ export const TAKER_MARGINS: Record<string, number> = {
   h2h_h1: 0.10 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half moneyline
   spreads_h1: 0.10 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half spreads
   totals_h1: 0.10 + MARGIN_ADJUSTMENT, // 5% minimum for 1st half totals
+  nrfi: 0.10 + MARGIN_ADJUSTMENT, // 10% minimum for NRFI (thin coverage, high variance)
 };
 
 // ============================================================================

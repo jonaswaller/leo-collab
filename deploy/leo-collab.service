@@ -1,0 +1,16 @@
+[Unit]
+Description=Leo Collab Polymarket Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/leo-collab
+ExecStart=/usr/bin/npm run start:live
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

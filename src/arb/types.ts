@@ -11,6 +11,7 @@ export type MarketType =
   | "spreads"
   | "totals"
   | "player_props"
+  | "nrfi"
   | "other";
 
 export interface PolymarketMarket {
