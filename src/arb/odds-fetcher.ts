@@ -43,6 +43,15 @@ interface PolymarketEventRef {
   startTimeMs: number;
 }
 
+interface OddsAPISport {
+  key?: string;
+  group?: string;
+  title?: string;
+  description?: string;
+  active?: boolean;
+  has_outrights?: boolean;
+}
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -246,6 +255,7 @@ async function runRateLimited<T>(
 async function fetchBaseOddsForSport(
   sportKey: string,
   polymarketEvents: PolymarketEventRef[],
+  markets: string = "h2h,spreads,totals",
 ): Promise<{ events: OddsAPIEvent[]; matchedEventKeys: Map<string, string> }> {
   try {
     const response = await axios.get<OddsAPIEvent[]>(
@@ -254,7 +264,7 @@ async function fetchBaseOddsForSport(
         params: {
           apiKey: ODDS_API_KEY,
           regions: "us",
-          markets: "h2h,spreads,totals",
+          markets,
           oddsFormat: "american",
           bookmakers: BOOKMAKERS.join(","),
         },
@@ -347,6 +357,106 @@ async function fetchAndMergeAlternates(
 // Phase 2: 8 concurrent, 50ms spacing → max ~20 req/sec
 const CONCURRENCY = 8;
 const MIN_INTERVAL_MS = 50;
+const ACTIVE_SPORTS_CACHE_TTL_MS = 30 * 60 * 1000;
+
+let activeSportKeysCache:
+  | {
+      keys: Set<string>;
+      fetchedAtMs: number;
+    }
+  | null = null;
+
+function getBaseMarketsForSport(pmSport: string): string {
+  // Odds API tennis support is match winner only for our purposes. Avoid
+  // requesting spreads/totals here because those markets are mostly US-sports
+  // coverage and can be unsupported/noisy for tennis tournament keys.
+  if (pmSport === "tennis") {
+    return "h2h";
+  }
+
+  return "h2h,spreads,totals";
+}
+
+async function fetchActiveOddsApiSportKeys(): Promise<Set<string> | null> {
+  const now = Date.now();
+
+  if (
+    activeSportKeysCache &&
+    now - activeSportKeysCache.fetchedAtMs < ACTIVE_SPORTS_CACHE_TTL_MS
+  ) {
+    return activeSportKeysCache.keys;
+  }
+
+  try {
+    const response = await axios.get<OddsAPISport[]>(`${ODDS_API_BASE}/sports`, {
+      params: {
+        apiKey: ODDS_API_KEY,
+      },
+    });
+
+    const keys = new Set(
+      (response.data || [])
+        .map((sport) => sport.key)
+        .filter((key): key is string => Boolean(key)),
+    );
+
+    if (keys.size === 0) {
+      console.warn(
+        "[Odds] /sports returned no active sport keys; keeping tennis fallback behavior",
+      );
+      return activeSportKeysCache?.keys ?? null;
+    }
+
+    activeSportKeysCache = {
+      keys,
+      fetchedAtMs: now,
+    };
+
+    return keys;
+  } catch (error: any) {
+    console.warn(
+      "[Odds] Warning: Could not fetch active sports list; keeping tennis fallback behavior",
+      error.response?.data || error.message,
+    );
+    return activeSportKeysCache?.keys ?? null;
+  }
+}
+
+async function getOddsApiSportsForPolymarketSport(
+  pmSport: string,
+  mapped: string | string[],
+): Promise<string[]> {
+  const oddsApiSports = Array.isArray(mapped) ? mapped : [mapped];
+
+  if (pmSport !== "tennis") {
+    return oddsApiSports;
+  }
+
+  const activeSportKeys = await fetchActiveOddsApiSportKeys();
+  if (!activeSportKeys) {
+    console.log(
+      `[Odds] Tennis active-sports filter unavailable; using all ${oddsApiSports.length} configured tournament keys`,
+    );
+    return oddsApiSports;
+  }
+
+  const activeTennisSports = oddsApiSports.filter((sportKey) =>
+    activeSportKeys.has(sportKey),
+  );
+
+  if (activeTennisSports.length === 0) {
+    console.log(
+      `[Odds] Tennis active-sports filter found 0/${oddsApiSports.length} configured tournament keys; using all keys for this cycle`,
+    );
+    return oddsApiSports;
+  }
+
+  console.log(
+    `[Odds] Tennis active-sports filter: ${activeTennisSports.length}/${oddsApiSports.length} tournament keys active`,
+  );
+
+  return activeTennisSports;
+}
 
 /**
  * Fetch sportsbook odds for Polymarket markets
@@ -458,21 +568,38 @@ export async function fetchOddsForMarkets(
   // Phase 1: Fetch base odds for ALL sports concurrently
   // =========================================================================
 
-  const sportEntries: { pmSport: string; oddsApiSport: string }[] = [];
+  // One pmSport can fan out to multiple Odds API sport keys (tennis → 30
+  // tournament-specific keys). Each oddsApiSport becomes its own fetch task;
+  // their results get merged into a single oddsData[pmSport] array below.
+  const sportEntries: {
+    pmSport: string;
+    oddsApiSport: string;
+    baseMarkets: string;
+  }[] = [];
   for (const pmSport of Object.keys(marketsBySport)) {
-    const oddsApiSport = SPORT_MAP[pmSport];
-    if (!oddsApiSport) {
+    const mapped = SPORT_MAP[pmSport];
+    if (!mapped) {
       console.log(`[Odds] No mapping for sport: ${pmSport}`);
       continue;
     }
-    sportEntries.push({ pmSport, oddsApiSport });
+    const oddsApiSports = await getOddsApiSportsForPolymarketSport(
+      pmSport,
+      mapped,
+    );
+    const baseMarkets = getBaseMarketsForSport(pmSport);
+    for (const oddsApiSport of oddsApiSports) {
+      sportEntries.push({ pmSport, oddsApiSport, baseMarkets });
+    }
   }
 
-  const baseTasks = sportEntries.map(({ pmSport, oddsApiSport }) => () =>
-    fetchBaseOddsForSport(
-      oddsApiSport,
-      allPolymarketEventsBySport[pmSport] || [],
-    ),
+  const baseTasks = sportEntries.map(
+    ({ pmSport, oddsApiSport, baseMarkets }) =>
+      () =>
+        fetchBaseOddsForSport(
+          oddsApiSport,
+          allPolymarketEventsBySport[pmSport] || [],
+          baseMarkets,
+        ),
   );
 
   const baseResults = await runRateLimited(baseTasks, CONCURRENCY, MIN_INTERVAL_MS);
@@ -499,7 +626,9 @@ export async function fetchOddsForMarkets(
       hasFirstHalf: false,
     };
 
-    oddsData[pmSport] = events;
+    // Append rather than overwrite: one pmSport may have multiple sport-key
+    // fetches (tennis fans out across tournaments).
+    oddsData[pmSport] = (oddsData[pmSport] || []).concat(events);
 
     // Determine which events need alternate line fetches
     for (const event of events) {

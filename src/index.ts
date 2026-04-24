@@ -38,13 +38,19 @@ import {
 } from "./arb/maker-registry.js";
 import { evaluateMakerOrders } from "./arb/maker-management.js";
 import { getClobClient } from "./arb/clob.js";
-import { TakerOpportunity, MakerOpportunity } from "./arb/types.js";
+import {
+  TakerOpportunity,
+  MakerOpportunity,
+  PolymarketMarket,
+} from "./arb/types.js";
+import { MarketBookmakerCooldowns } from "./arb/bookmaker-cooldown.js";
 import {
   fetchBestPricesForTokens,
   enrichMarketsWithClobQuotes,
 } from "./arb/orderbook.js";
 import { saveWager, updateWagerCLV } from "./storage/operations.js";
 import { trackMakerFills } from "./storage/tracking.js";
+import { isMarketEnded, isMarketLive } from "./arb/game-state.js";
 
 // ============================================================================
 // CONFIGURATION
@@ -55,10 +61,18 @@ import {
   CLV_UPDATE_WINDOW_MS,
   getMinBookmakers,
   MAX_PER_BUCKET_FRACTION,
+  BOOKMAKER_DROP_COOLDOWN_CYCLES,
+  FAIR_VALUE_MOVE_COOLDOWN_THRESHOLD,
+  FAIR_VALUE_MOVE_WINDOW_MS,
 } from "./arb/config.js";
 
 const DRY_RUN = process.env.DRY_RUN !== "false"; // Default to dry-run for safety
 const LOG_UNMATCHED_LINES = process.env.LOG_UNMATCHED_LINES === "true"; // Toggle verbose unmatched line logging
+const bookmakerCooldowns = new MarketBookmakerCooldowns(
+  BOOKMAKER_DROP_COOLDOWN_CYCLES,
+  FAIR_VALUE_MOVE_COOLDOWN_THRESHOLD,
+  FAIR_VALUE_MOVE_WINDOW_MS,
+);
 
 // ============================================================================
 // POLLING LOGIC
@@ -504,7 +518,7 @@ async function evaluateExistingMakers(
  * - Closed (closed=true): stop trading
  */
 async function handleMarketStates(
-  markets: any[],
+  markets: PolymarketMarket[],
   dryRun: boolean,
 ): Promise<void> {
   const now = Date.now();
@@ -516,21 +530,39 @@ async function handleMarketStates(
 
   const ordersToCancel: string[] = [];
 
-  // Build map of market slugs to start times
-  const marketStartTimes = new Map<string, number>();
-  for (const market of markets) {
-    if (market.marketSlug && market.startTime) {
-      const startTime = new Date(market.startTime).getTime();
-      marketStartTimes.set(market.marketSlug, startTime);
+  // Build map of market slug -> latest lifecycle snapshot observed via Gamma.
+  const marketStates = new Map<
+    string,
+    {
+      startTimeMs: number | null;
+      live: boolean;
+      ended: boolean;
     }
+  >();
+  for (const market of markets) {
+    if (!market.marketSlug) continue;
+
+    const startTimeMs = market.startTime
+      ? new Date(market.startTime).getTime()
+      : null;
+
+    marketStates.set(market.marketSlug, {
+      startTimeMs: Number.isFinite(startTimeMs) ? startTimeMs : null,
+      live: isMarketLive(market),
+      ended: isMarketEnded(market),
+    });
   }
 
   // Check each tracked order for cancellation
   for (const order of trackedOrders) {
-    const startTime = marketStartTimes.get(order.marketSlug);
+    const state = marketStates.get(order.marketSlug);
+    if (!state) continue;
 
-    if (startTime && now >= startTime) {
-      // Game has started - cancel this order
+    const startedByTime =
+      state.startTimeMs !== null && now >= state.startTimeMs;
+
+    if (state.live || state.ended || startedByTime) {
+      // Event is no longer safely prematch - cancel this order.
       ordersToCancel.push(order.orderId);
     }
   }
@@ -583,28 +615,34 @@ async function runCycle(cycleNumber: number): Promise<number> {
     // Step 1: Discover markets
     console.log("\n📊 Step 1: Discovering Polymarket markets...");
     const startDiscovery = Date.now();
-    const markets = await discoverPolymarkets();
+    const discovery = await discoverPolymarkets();
+    const allMarkets = discovery.stateMarkets;
+    const tradableMarkets = discovery.tradableMarkets;
     // Enrich markets with live CLOB prices so all downstream logic uses fresh Polymarket quotes
-    await enrichMarketsWithClobQuotes(markets);
+    await enrichMarketsWithClobQuotes(tradableMarkets);
     const discoveryTime = ((Date.now() - startDiscovery) / 1000).toFixed(1);
-    console.log(`   ✓ Found ${markets.length} markets in ${discoveryTime}s`);
+    console.log(
+      `   ✓ Found ${tradableMarkets.length} prematch-tradable markets (${allMarkets.length} tracked for state) in ${discoveryTime}s`,
+    );
 
-    if (markets.length === 0) {
-      console.log("   No markets found. Sleeping...");
+    if (tradableMarkets.length === 0) {
+      console.log("   No prematch-tradable markets found.");
+      console.log("\n⚠️  Step 10: Checking market states...");
+      await handleMarketStates(allMarkets, DRY_RUN);
       return POLLING_INTERVAL_MS;
     }
 
     // Step 2: Fetch odds
     console.log("\n📡 Step 2: Fetching sportsbook odds...");
     const startOdds = Date.now();
-    const oddsData = await fetchOddsForMarkets(markets);
+    const oddsData = await fetchOddsForMarkets(tradableMarkets);
     const oddsTime = ((Date.now() - startOdds) / 1000).toFixed(1);
     console.log(`   ✓ Fetched odds in ${oddsTime}s`);
 
     // Step 3: Match markets
     console.log("\n🔗 Step 3: Matching markets...");
     const startMatch = Date.now();
-    const matched = matchMarkets(markets, oddsData);
+    const matched = matchMarkets(tradableMarkets, oddsData);
     const matchTime = ((Date.now() - startMatch) / 1000).toFixed(1);
     const matchedCount = matched.filter(
       (m) => Object.keys(m.sportsbooks).length > 0,
@@ -659,7 +697,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
     // Seed exposure with current positions
     const positionExposureSnapshots = buildExposureSnapshotsFromPositions(
-      markets,
+      allMarkets,
       positions,
     );
     const bucketExposureByKey = new Map<string, number>();
@@ -697,7 +735,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
     // Build position map for quick lookup
     const enrichedPositions = await import("./arb/positions.js").then((m) =>
-      m.buildEnrichedPositions(markets, positions),
+      m.buildEnrichedPositions(allMarkets, positions),
     );
     const positionMap = buildPositionMap(enrichedPositions);
 
@@ -733,9 +771,37 @@ async function runCycle(cycleNumber: number): Promise<number> {
     }
 
     const analyzeTime = ((Date.now() - startAnalyze) / 1000).toFixed(1);
+    const bookmakerCooldownUpdate = bookmakerCooldowns.updateFromMatches(
+      opportunities.matched,
+      cycleNumber,
+    );
+    // Use the cooldown-filtered maker list for both placement and evaluation:
+    // tracked orders in cooled markets then cancel as "out of model."
+    const eligibleMakers = bookmakerCooldowns.filterMakerOpportunities(
+      opportunities.makers,
+      cycleNumber,
+    );
+    const cooledMakerCount = opportunities.makers.length - eligibleMakers.length;
+
+    if (bookmakerCooldownUpdate.triggered.length > 0) {
+      console.log(
+        `\n🧊 Market cooldown triggered for ${bookmakerCooldownUpdate.triggered.length} market(s):`,
+      );
+      for (const trigger of bookmakerCooldownUpdate.triggered) {
+        console.log(
+          `   ${trigger.marketKey}: ${trigger.reasons.join("; ")}; blocked through cycle ${trigger.cooldownUntilCycle}`,
+        );
+      }
+    }
+
     console.log(
       `   ✓ Found ${opportunities.takers.length} takers, ${opportunities.makers.length} makers in ${analyzeTime}s`,
     );
+    if (cooledMakerCount > 0) {
+      console.log(
+        `   ✓ Cooldown blocked ${cooledMakerCount} maker opportunity(s); ${eligibleMakers.length} still eligible`,
+      );
+    }
 
     // Step 6: Takers DISABLED — stored fair_prob_at_placement is being
     // inflated for takers (see DEBUG CONSENSUS log in analyzer.ts). Every
@@ -747,7 +813,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
     // Step 7: Place new maker orders
     console.log("\n💎 Step 7: Placing new maker orders...");
-    await placeNewMakers(opportunities.makers, positionMap, DRY_RUN);
+    await placeNewMakers(eligibleMakers, positionMap, DRY_RUN);
 
     // Step 8: Track maker fills (DB sync) - Run BEFORE evaluation to catch fills on orders that might be cancelled
     // Only run in live mode or if we want to test DB logic (but no fills in dry run)
@@ -759,7 +825,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
     // Step 9: Evaluate existing maker orders
     console.log("\n🔍 Step 9: Evaluating existing maker orders...");
     await evaluateExistingMakers(
-      opportunities.makers,
+      eligibleMakers,
       positionMap,
       bucketExposureByKey,
       capital.totalCapitalUSD,
@@ -768,7 +834,7 @@ async function runCycle(cycleNumber: number): Promise<number> {
 
     // Step 10: Handle market states (cancel orders for live/closed markets)
     console.log("\n⚠️  Step 10: Checking market states...");
-    await handleMarketStates(markets, DRY_RUN);
+    await handleMarketStates(allMarkets, DRY_RUN);
 
     // Step 11: Get polling interval
     const sleepDuration = getPollingInterval();

@@ -13,6 +13,7 @@ import {
   MarketType,
 } from "./types.js";
 import { HOURS_AHEAD } from "./config.js";
+import { isEventEnded, isEventLive } from "./game-state.js";
 
 // ============================================================================
 // CONFIGURATION
@@ -51,6 +52,9 @@ const SPORT_TAG_MAP: Record<string, string[]> = {
   t20: ["102810"],
   // MMA
   mma: ["100639"],
+  // Tennis (ATP + WTA combined — Gamma doesn't split them at the tag level,
+  // their frontend filters client-side by title keywords)
+  tennis: ["864"],
 };
 
 // Create dedicated axios instance for Gamma API with optimized settings
@@ -137,8 +141,16 @@ function parseTeamNames(eventTitle: string): {
     if (eventTitle.includes(sep)) {
       const parts = eventTitle.split(sep);
       if (parts.length === 2 && parts[0] && parts[1]) {
+        // Tennis events (and some others) prefix the title with the
+        // tournament name, e.g. "Busan: Zhou vs Kotov". Strip anything
+        // before the last ": " in the away side so player/team name doesn't
+        // carry the tournament string into downstream name matching.
+        const awayRaw = parts[0].trim();
+        const colonIdx = awayRaw.lastIndexOf(": ");
+        const awayTeam =
+          colonIdx >= 0 ? awayRaw.slice(colonIdx + 2).trim() : awayRaw;
         return {
-          awayTeam: parts[0].trim(),
+          awayTeam,
           homeTeam: parts[1].trim(),
         };
       }
@@ -243,7 +255,27 @@ function sleep(ms: number): Promise<void> {
 // MAIN DISCOVERY FUNCTION
 // ============================================================================
 
-export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
+export interface DiscoverPolymarketsResult {
+  tradableMarkets: PolymarketMarket[];
+  stateMarkets: PolymarketMarket[];
+}
+
+function dedupeMarkets(markets: PolymarketMarket[]): PolymarketMarket[] {
+  const seen = new Set<string>();
+
+  return markets.filter((market) => {
+    const key = market.marketSlug
+      ? `market:${market.marketSlug}`
+      : `${market.eventSlug || market.eventTitle}:${market.marketQuestion}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+export async function discoverPolymarkets(): Promise<DiscoverPolymarketsResult> {
   const now = new Date();
   const windowEnd = new Date(now.getTime() + HOURS_AHEAD * 60 * 60 * 1000);
 
@@ -286,12 +318,14 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
   );
 
   // Extract and filter markets from events
-  const allMarkets: PolymarketMarket[] = [];
+  const tradableMarkets: PolymarketMarket[] = [];
+  const stateMarkets: PolymarketMarket[] = [];
 
   let totalEvents = 0;
   let noMarketsCount = 0;
   let noStartTimeCount = 0;
   let outsideWindowCount = 0;
+  let nonPrematchCount = 0;
   let closedCount = 0;
   let noBidAskCount = 0;
   let lowLiquidityCount = 0;
@@ -307,17 +341,61 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
       }
 
       const eventStartTime = extractStartTime(event, undefined);
+      const eventLive = isEventLive(event);
+      const eventEnded = isEventEnded(event);
+      const eventIsPrematchTradable = !eventLive && !eventEnded;
 
-      if (!eventStartTime) {
+      if (!eventStartTime && eventIsPrematchTradable) {
         noStartTimeCount++;
         continue;
       }
-      if (!isWithinTimeWindow(eventStartTime, now, windowEnd)) {
+      if (
+        eventStartTime &&
+        !isWithinTimeWindow(eventStartTime, now, windowEnd) &&
+        eventIsPrematchTradable
+      ) {
         outsideWindowCount++;
         continue;
       }
 
       for (const market of event.markets) {
+        const startTime = extractStartTime(event, market) || eventStartTime;
+        if (!startTime) {
+          continue;
+        }
+
+        const liquidity = calculateLiquidity(market);
+        const eventTitle = event.title || "Unknown Event";
+        const marketQuestion = market.question || "Unknown Market";
+        const { homeTeam, awayTeam } = parseTeamNames(eventTitle);
+        const marketType = detectMarketType(marketQuestion);
+
+        const polymarketMarket: PolymarketMarket = {
+          sport,
+          eventTitle,
+          startTime: startTime.toISOString(),
+          marketQuestion,
+          marketType,
+          liquidity,
+          eventLive,
+          eventEnded,
+        };
+
+        if (homeTeam) polymarketMarket.homeTeam = homeTeam;
+        if (awayTeam) polymarketMarket.awayTeam = awayTeam;
+        if (event.slug) polymarketMarket.eventSlug = event.slug;
+        if (market.slug) polymarketMarket.marketSlug = market.slug;
+        if (event.gameStatus !== null && event.gameStatus !== undefined) {
+          polymarketMarket.gameStatus = event.gameStatus;
+        }
+
+        stateMarkets.push(polymarketMarket);
+
+        if (!eventIsPrematchTradable) {
+          nonPrematchCount++;
+          continue;
+        }
+
         // Skip closed/inactive markets
         if (market.closed || market.active === false) {
           closedCount++;
@@ -338,9 +416,6 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           noBidAskCount++;
           continue;
         }
-
-        // Calculate liquidity
-        const liquidity = calculateLiquidity(market);
 
         // Filter by minimum liquidity
         if (liquidity < MIN_LIQUIDITY) {
@@ -369,13 +444,14 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           }
         }
 
-        // Get start time
-        const startTime = extractStartTime(event, market) || eventStartTime;
-
-        const eventTitle = event.title || "Unknown Event";
-        const marketQuestion = market.question || "Unknown Market";
-        const { homeTeam, awayTeam } = parseTeamNames(eventTitle);
-        const marketType = detectMarketType(marketQuestion);
+        // Tennis: only bet the main match moneyline. Each tennis event has
+        // ~10 child markets (set handicap, total sets, set N winner, etc.)
+        // that we don't model. The main h2h market's question equals the
+        // event title; everything else is filtered here.
+        if (sport === "tennis" && marketQuestion !== eventTitle) {
+          playerPropCount++;
+          continue;
+        }
 
         // Skip team totals only (player props are now supported)
         const qLower = marketQuestion.toLowerCase();
@@ -383,15 +459,6 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           playerPropCount++;
           continue;
         }
-
-        const polymarketMarket: PolymarketMarket = {
-          sport,
-          eventTitle,
-          startTime: startTime.toISOString(),
-          marketQuestion,
-          marketType,
-          liquidity,
-        };
 
         // Add player prop fields
         if (marketType === "player_props") {
@@ -486,7 +553,7 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
           polymarketMarket.minOrderSize = market.orderMinSize;
         }
 
-        allMarkets.push(polymarketMarket);
+        tradableMarkets.push(polymarketMarket);
       }
     }
   }
@@ -498,25 +565,16 @@ export async function discoverPolymarkets(): Promise<PolymarketMarket[]> {
   console.log(
     `  Filtered — outside window (${HOURS_AHEAD}h): ${outsideWindowCount}`,
   );
+  console.log(`  Filtered — live/ended/non-prematch: ${nonPrematchCount}`);
   console.log(`  Filtered — closed/inactive: ${closedCount}`);
   console.log(`  Filtered — no bid/ask: ${noBidAskCount}`);
   console.log(`  Filtered — low liquidity: ${lowLiquidityCount}`);
   console.log(`  Filtered — phantom spread: ${phantomCount}`);
   console.log(`  Filtered — player props: ${playerPropCount}`);
-  console.log(`  Passed all filters: ${allMarkets.length}`);
+  console.log(`  Passed all filters: ${tradableMarkets.length}`);
 
-  // Deduplicate markets by unique key
-  const seen = new Set<string>();
-  const uniqueMarkets = allMarkets.filter((market) => {
-    const key = market.marketSlug
-      ? `market:${market.marketSlug}`
-      : `${market.eventSlug || market.eventTitle}:${market.marketQuestion}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-
-  return uniqueMarkets;
+  return {
+    tradableMarkets: dedupeMarkets(tradableMarkets),
+    stateMarkets: dedupeMarkets(stateMarkets),
+  };
 }

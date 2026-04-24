@@ -76,7 +76,12 @@ export const BOOKMAKER_WEIGHTS: Record<string, number> = {
 // SPORT MAPPING (Polymarket -> Odds API)
 // ============================================================================
 
-export const SPORT_MAP: Record<string, string> = {
+// Each sport maps to one or more Odds API sport keys. Tennis is the only sport
+// here that fans out — Odds API has no umbrella "all ATP" key, only
+// per-tournament keys, so a single Polymarket tennis market may match any of
+// the active tennis_atp_* / tennis_wta_* keys. Out-of-season tournament keys
+// return 404 and are silently skipped by fetchBaseOddsForSport.
+export const SPORT_MAP: Record<string, string | string[]> = {
   nfl: "americanfootball_nfl",
   cfb: "americanfootball_ncaaf",
   nba: "basketball_nba",
@@ -103,6 +108,40 @@ export const SPORT_MAP: Record<string, string> = {
   wcw: "soccer_fifa_world_cup_winner", // FIFA World Cup Winner
   cwc: "soccer_fifa_club_world_cup", // FIFA Club World Cup
   mma: "mma_mixed_martial_arts",
+  tennis: [
+    // ATP
+    "tennis_atp_aus_open_singles",
+    "tennis_atp_canadian_open",
+    "tennis_atp_china_open",
+    "tennis_atp_cincinnati_open",
+    "tennis_atp_dubai",
+    "tennis_atp_french_open",
+    "tennis_atp_indian_wells",
+    "tennis_atp_italian_open",
+    "tennis_atp_madrid_open",
+    "tennis_atp_miami_open",
+    "tennis_atp_monte_carlo_masters",
+    "tennis_atp_paris_masters",
+    "tennis_atp_qatar_open",
+    "tennis_atp_shanghai_masters",
+    "tennis_atp_us_open",
+    "tennis_atp_wimbledon",
+    // WTA
+    "tennis_wta_aus_open_singles",
+    "tennis_wta_canadian_open",
+    "tennis_wta_china_open",
+    "tennis_wta_cincinnati_open",
+    "tennis_wta_dubai",
+    "tennis_wta_french_open",
+    "tennis_wta_indian_wells",
+    "tennis_wta_italian_open",
+    "tennis_wta_madrid_open",
+    "tennis_wta_miami_open",
+    "tennis_wta_qatar_open",
+    "tennis_wta_us_open",
+    "tennis_wta_wimbledon",
+    "tennis_wta_wuhan_open",
+  ],
 };
 
 // ============================================================================
@@ -176,6 +215,16 @@ export const BANKROLL_USD = 1000; // Legacy fallback; real bankroll will come fr
 
 // If currentEV drops more than this vs evAtPlacement, cancel
 export const MAKER_EVAL_EV_DROP = 0.02; // 2%
+
+// If sportsbook coverage suddenly deteriorates for a market, pull resting
+// maker liquidity and do not repost for this many completed bot cycles.
+export const BOOKMAKER_DROP_COOLDOWN_CYCLES = 7;
+
+// If weighted fair value for a market shifts by more than this amount within
+// the trailing window below, stop making that market for the same cooldown
+// duration. Expressed in probability points, so 0.02 = 2 percentage points.
+export const FAIR_VALUE_MOVE_COOLDOWN_THRESHOLD = 0.02;
+export const FAIR_VALUE_MOVE_WINDOW_MS = 15 * 60 * 1000;
 
 // ============================================================================
 // MAIN LOOP POLLING (PHASE 5)

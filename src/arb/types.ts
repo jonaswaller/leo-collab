@@ -23,6 +23,9 @@ export interface PolymarketMarket {
   marketQuestion: string;
   marketType: MarketType;
   liquidity: number;
+  eventLive?: boolean;
+  eventEnded?: boolean;
+  gameStatus?: string;
   outcome1Name?: string;
   bestBid?: number;
   bestAsk?: number;
@@ -67,6 +70,12 @@ export interface GammaEvent {
   endDate?: string | null;
   closed?: boolean | null;
   active?: boolean | null;
+  live?: boolean | null;
+  ended?: boolean | null;
+  score?: string | null;
+  elapsed?: string | null;
+  period?: string | null;
+  gameStatus?: string | null;
   markets?: GammaMarket[];
   tags?: Array<{ id: string; label: string; slug: string }> | null;
   category?: string | null;
